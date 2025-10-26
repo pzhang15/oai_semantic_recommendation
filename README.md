@@ -10,9 +10,18 @@ Semantic search and outfit composition service using FAISS (IndexFlatIP) and Ope
 - Telemetry with token/latency/cost; `/debug/stats` and eval scripts
 
 ## Architecture
-![Architecture](docs/architecture.png)
+![Architecture](./docs/architecture.png)
 
-See sequences: [search](docs/search-sequence.png) | [outfit](docs/outfit-sequence.png)
+Sequence diagrams:
+
+![Search sequence](./docs/search-sequence.png)
+
+![Outfit sequence](./docs/outfit-sequence.png)
+
+If the images are missing, render them first:
+```bash
+make diagrams
+```
 
 ## Prerequisites
 - Python 3.11
