@@ -12,6 +12,10 @@ FILES = [
     (DOCS / "outfit-sequence.mmd", [DOCS / "outfit-sequence.png"]),
 ]
 
+# PNG quality controls (env overrides)
+PNG_SCALE = float(os.getenv("DIAG_SCALE", "2.5"))  # ~2–3 gives crisp PNGs
+PNG_WIDTH = os.getenv("DIAG_WIDTH")  # optional absolute width in px (e.g., 2400)
+
 
 def main() -> None:
     missing = [str(src) for (src, _) in FILES if not src.exists()]
@@ -30,12 +34,12 @@ def main() -> None:
     exported = []
     for src, outs in FILES:
         for out in outs:
-            cmd = [
-                mmdc,
-                "-i", str(src),
-                "-o", str(out),
-                "-t", "default",
-            ]
+            cmd = [mmdc, "-i", str(src), "-o", str(out), "-t", "default"]
+            # Improve raster quality for PNGs
+            if str(out).lower().endswith(".png"):
+                cmd += ["-s", f"{PNG_SCALE}"]
+                if PNG_WIDTH:
+                    cmd += ["-w", str(PNG_WIDTH)]
             try:
                 subprocess.run(cmd, check=True)
                 exported.append(out)
