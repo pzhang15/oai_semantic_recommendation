@@ -1,0 +1,34 @@
+sequenceDiagram
+    participant Client
+    participant API as FastAPI
+    participant Parser as Parser (LLM)
+    participant Embed as Embedding (LLM)
+    participant FAISS as FAISS
+    participant Filters as Filters
+    participant Judge as Judge (LLM, optional)
+    participant Composer as Outfit Composer (LLM)
+    participant Finalize as Finalize (server)
+
+    Client->>API: POST /outfit {query, use_judge}
+    API->>Parser: parse_query(query)
+    Parser-->>API: facets
+    API->>Embed: embed_query(query)
+    Embed-->>API: vector
+    API->>FAISS: search(vector)
+    FAISS-->>API: row ids
+    API->>Filters: apply filters
+    Filters-->>API: kept cands
+    alt use_judge==true
+        API->>Judge: judge_batch(cands[:M])
+        Judge-->>API: scores + why
+        API->>API: rank pool
+    else
+        API->>API: pool from retrieval
+    end
+    API->>Composer: compose_outfit(facets, pool)
+    Composer-->>API: OutfitPlan (slots)
+    API->>Finalize: join canonical info, dedupe ids, compute total, enforce required slots
+    Finalize-->>API: slots + totals + under_budget
+    API-->>Client: 200 {slots, total_price, under_budget, trace.timings}
+
+    Note over Finalize,API: Server ensures no duplicate ids across slots and recomputes totals

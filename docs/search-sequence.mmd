@@ -1,0 +1,32 @@
+sequenceDiagram
+    participant Client
+    participant API as FastAPI
+    participant Parser as Parser (LLM)
+    participant Embed as Embedding (LLM)
+    participant FAISS as FAISS IndexFlatIP
+    participant Filters as Filters
+    participant Judge as Judge (LLM, optional)
+    participant MMR as MMR Diversity
+
+    Client->>API: POST /search {query, limit, use_judge}
+    API->>Parser: parse_query(query)
+    Parser-->>API: facets (JSON)
+    API->>Embed: embed_query(query)
+    Embed-->>API: vector (unit-norm)
+    API->>FAISS: search(vector)
+    FAISS-->>API: top row ids
+    API->>API: retriever join ids->products
+    API->>Filters: apply budget/category/gender/constraints
+    Filters-->>API: kept candidates
+    alt use_judge==true
+        API->>Judge: judge_batch(cands[:M])
+        Judge-->>API: scores + rationale
+        API->>API: blend with retrieval (alpha)
+    else
+        API->>API: skip judge (fallback to retrieval-only)
+    end
+    API->>MMR: select final K (lambda)
+    MMR-->>API: diversified items
+    API-->>Client: 200 {items, trace.timings}
+
+    Note over Parser,MMR: Typical latencies: parse ~150-300ms, embed ~30-60ms, FAISS ~1-5ms, judge dominates if enabled
