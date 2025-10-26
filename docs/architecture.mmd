@@ -7,9 +7,9 @@ graph LR
   end
 
   subgraph FastAPI_App
-    Rrouters[routers: search, outfit, debug]
-    Core[core: embedding, faiss_store, retriever, filters, rerank (judge), mmr, parser, outfit]
-    T[telemetry: timer, counters, costs]
+    Rrouters[routers: search/outfit/debug]
+    Core[core modules]
+    T[telemetry: timer/counters/costs]
   end
 
   subgraph LocalStorage
@@ -20,31 +20,31 @@ graph LR
   end
 
   subgraph External
-    OAI[OpenAI API\n(Embeddings, Parser, Judge, Composer)]
+    OAI["OpenAI API (Embeddings Parser Judge Composer)"]
   end
 
   C -->|HTTP JSON| Rrouters
   Rrouters --> Core
   Core --> T
 
-  %% Data flows (/search)
+  %% Data flows /search
   C -->|Query| Core
-  Core -->|1) Parser (Structured Outputs)| OAI
-  Core -->|2) Embedding| OAI
+  Core -->|Parser Structured Outputs| OAI
+  Core -->|Embedding| OAI
   OAI -->|vector| Core
-  Core -->|3) FAISS search (vector)| F
+  Core -->|FAISS search vector| F
   F -->|row ids| Core
-  Core -->|4) join ids->products| P
-  Core -->|5) filters (budget/category/gender/constraints)| Core
-  Core -->|6) judge batch (optional)| OAI
-  Core -->|7) MMR diversity| Core
-  Core -->|/search items| Rrouters
+  Core -->|join ids to products| P
+  Core -->|filters budget category gender constraints| Core
+  Core -->|judge batch optional| OAI
+  Core -->|MMR diversity| Core
+  Core -->|search items| Rrouters
 
   %% Outfit path
-  Core -->|pool (post-filter/judge)| Core
-  Core -->|composer LLM (slots)| OAI
+  Core -->|pool post filter judge| Core
+  Core -->|composer LLM slots| OAI
   OAI -->|plan| Core
-  Core -->|finalize (dedupe, totals)| Core
-  Core -->|/outfit slots| Rrouters
+  Core -->|finalize dedupe totals| Core
+  Core -->|outfit slots| Rrouters
 
-  T -->|/debug/stats| Rrouters
+  T -->|debug stats| Rrouters
