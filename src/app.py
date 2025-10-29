@@ -1,9 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Any
+import os
 
 from src.core.config import get_settings
 from src.core.faiss_store import FaissStore
 from src.core.retriever import set_store
+from src.core import result_cache as result_cache
+from src.core import judge_cache as judge_cache
 from src.routers.search import router as search_router
 from src.routers.outfit import router as outfit_router
 from src.routers.debug import router as debug_router
@@ -39,9 +43,24 @@ def create_app() -> FastAPI:
             stats_path=settings.stats_path,
         )
         set_store(store)
+        # Configure FAISS and BLAS threading for performance
+        try:
+            import faiss  # type: ignore
+            threads = max(1, os.cpu_count() or 8)
+            faiss.omp_set_num_threads(threads)
+            os.environ.setdefault("OMP_NUM_THREADS", str(max(1, threads - 1)))
+            os.environ.setdefault("MKL_NUM_THREADS", os.environ["OMP_NUM_THREADS"])  # type: ignore[index]
+            os.environ.setdefault("OPENBLAS_NUM_THREADS", os.environ["OMP_NUM_THREADS"])  # type: ignore[index]
+        except Exception:
+            pass
+        # Configure result cache
+        if settings.result_cache_enable:
+            result_cache.configure(max_size=settings.result_cache_size, ttl_secs=settings.result_cache_ttl_secs)
+        # Configure judge request-level cache (LRU+TTL)
+        judge_cache.init(size=settings.judge_cache_size, ttl_secs=settings.judge_cache_ttl_secs)
 
     @app.get("/healthz")
-    async def healthz() -> dict[str, str | int]:
+    async def healthz() -> dict[str, Any]:
         # Attempt to read FAISS store info
         try:
             settings = get_settings()
@@ -52,14 +71,22 @@ def create_app() -> FastAPI:
                 ids_path=settings.ids_path,
                 stats_path=settings.stats_path,
             )
-            return {
+            resp = {
                 "backend": "faiss",
                 "dim": store.dimension,
                 "size": store.size,
                 "index_type": store.index_type,
             }
+            # lexical info if present
+            try:
+                from src.core.lexical import ready as lexical_ready
+                lx = lexical_ready()
+                resp["lexical"] = lx
+            except Exception:
+                resp["lexical"] = {"ready": False}
+            return resp
         except Exception:
-            return {"backend": "faiss", "dim": 0, "size": 0, "index_type": "unknown"}
+            return {"backend": "faiss", "dim": 0, "size": 0, "index_type": "unknown", "lexical": {"ready": False}}
 
     return app
 

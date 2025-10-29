@@ -4,13 +4,23 @@ import hashlib
 import json
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from openai import BadRequestError, OpenAI
 
 from src.core.config import get_settings
 from src.models.schemas import QueryFacets
 from src.telemetry.timer import span
-from src.telemetry.counters import add_usage
+from src.telemetry.counters import add_usage, add_judge_gate_event, estimate_model_cost
+from src.core.clients import get_openai_client
+from src.core.judge_gate import (
+    compute_signals,
+    decide_mode,
+    post_judge_quality_check,
+    projected_cost_ok,
+    fingerprint,
+)
+from src.core import judge_cache as judge_req_cache
 
 
 # In-memory cache with TTL
@@ -18,6 +28,7 @@ _JUDGE_CACHE: Dict[Tuple[str, str, str, str], Tuple[Dict[str, Any], float]] = {}
 _CACHE_HITS = 0
 _CACHE_MISSES = 0
 _TEST_FORCE_TEMP_REJECT = False
+_CB_DISABLED_UNTIL = 0.0
 
 
 def get_judge_cache_stats() -> Dict[str, int]:
@@ -60,6 +71,34 @@ def _minimal_facets_key(f: QueryFacets) -> str:
     }
     return _stable_hash_obj(mins)
 
+
+def should_enable_judge(f: QueryFacets, page: int, settings) -> tuple[bool, str]:
+    """Heuristic to decide if judge should run.
+
+    Signals: budget max present, any hard constraints, any materials/colors, specific occasion.
+    Page gating: optionally only on first page.
+    """
+    if settings.judge_auto_page1_only and page > 1:
+        return False, "page>1"
+    signals = 0
+    reasons: list[str] = []
+    if isinstance(getattr(f.budget_usd, "max", None), (int, float)):
+        signals += 1
+        reasons.append("budget")
+    if f.hard_constraints:
+        signals += 1
+        reasons.append("hard_constraints")
+    if f.materials:
+        signals += 1
+        reasons.append("materials")
+    if f.colors:
+        signals += 1
+        reasons.append("colors")
+    if f.occasion:
+        signals += 1
+        reasons.append("occasion")
+    ok = signals >= int(getattr(settings, "judge_auto_min_signals", 1) or 1)
+    return ok, ",".join(reasons) if reasons else "none"
 
 def _call_chat_completion(client: OpenAI, model_id: str, messages: list[dict], schema: Optional[dict], max_tokens: int, timeout_secs: int):
     def _do(include_temp: bool, rf: Optional[dict]):
@@ -131,8 +170,8 @@ def _build_schema_array() -> dict:
     }
 
 
-def judge_batch(facets: QueryFacets, batch_candidates: List[Dict[str, Any]], model_id: str, settings) -> List[Dict[str, Any]]:
-    client = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
+def judge_batch(facets: QueryFacets, batch_candidates: List[Dict[str, Any]], model_id: str, settings, *, compact: bool = False) -> List[Dict[str, Any]]:
+    client = get_openai_client()
     facets_summary = _summarize_facets_for_prompt(facets)
     schema = _build_schema_array()
     cands_min = [
@@ -140,11 +179,18 @@ def judge_batch(facets: QueryFacets, batch_candidates: List[Dict[str, Any]], mod
         for it in batch_candidates
     ]
 
-    sys_prompt = (
-        "You are a strict fashion judge. Score each product against the user's facets using this rubric: "
-        "occasion fit (30%), budget fit (20%), material/season fit (20%), color/style (20%), quality/brand (10%). "
-        "Scores are 0 to 5 (integers or halves). Respond ONLY with a JSON array matching the schema."
-    )
+    if compact:
+        sys_prompt = (
+            "You are a strict fashion judge. Score each product 0..5 using this rubric: "
+            "occasion(30%), budget(20%), material/season(20%), color/style(20%), quality/brand(10%). "
+            "Return ONLY a JSON array per schema."
+        )
+    else:
+        sys_prompt = (
+            "You are a strict fashion judge. Score each product against the user's facets using this rubric: "
+            "occasion fit (30%), budget fit (20%), material/season fit (20%), color/style (20%), quality/brand (10%). "
+            "Scores are 0 to 5 (integers or halves). Respond ONLY with a JSON array matching the schema."
+        )
     user_content = (
         "Facets:" + json.dumps(facets_summary, separators=(",", ":")) +
         "\nCandidates:" + json.dumps(cands_min, separators=(",", ":"))
@@ -154,8 +200,9 @@ def judge_batch(facets: QueryFacets, batch_candidates: List[Dict[str, Any]], mod
         {"role": "user", "content": user_content},
     ]
 
+    max_toks = min(settings.judge_max_tokens, 220 if compact else settings.judge_max_tokens)
     with span("judge") as sp:
-        resp = _call_chat_completion(client, model_id, messages, schema, settings.judge_max_tokens, settings.judge_timeout_secs)
+        resp = _call_chat_completion(client, model_id, messages, schema, max_toks, settings.judge_timeout_secs)
     content = resp.choices[0].message.content or "[]"
     # tokens
     try:
@@ -233,17 +280,28 @@ def judge_rerank(
     model: Optional[str] = None,
     settings=None,
     batch_size: Optional[int] = None,
+    dense_ids: Optional[List[str]] = None,
+    lex_ids: Optional[List[str]] = None,
+    normalized_query: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if settings is None:
         settings = get_settings()
     model_id = model or settings.model_judge
 
+    # Circuit breaker: skip if recently degraded
+    now = time.time()
+    if now < globals().get("_CB_DISABLED_UNTIL", 0.0):
+        trace = {"enabled": False, "model": model_id, "top_m": 0, "batch_size": 0, "cached_hits": 0, "cached_misses": 0, "degraded": True, "reason": "circuit"}
+        return candidates, trace
+
     if not candidates:
         return [], {"enabled": True, "model": model_id, "top_m": 0, "batch_size": 0, "cached_hits": 0, "cached_misses": 0}
 
-    # Select top M by retrieval
-    M = min(int(top_m or settings.judge_top_m), len(candidates))
-    top = sorted(candidates, key=lambda it: float(it.get("raw_score") or it.get("score") or 0.0), reverse=True)[:M]
+    # Select top M by retrieval (we may adjust below based on gate)
+    default_M = min(int(top_m or settings.judge_top_m), len(candidates))
+    # Pre-sort by retrieval to define fused order
+    sorted_by_retr = sorted(candidates, key=lambda it: float(it.get("raw_score") or it.get("score") or 0.0), reverse=True)
+    top = sorted_by_retr[:default_M]
 
     # Prepare cache keys
     facets_key = _stable_hash_obj(_summarize_facets_for_prompt(facets))
@@ -260,37 +318,122 @@ def judge_rerank(
     for k in to_del:
         _JUDGE_CACHE.pop(k, None)
 
-    # Lookup cache and split
+    # Gating and request-level cache fingerprint (for the fused set)
+    fused_ids = [str(it.get("id")) for it in sorted_by_retr[: min(settings.judge_full_top_m if hasattr(settings, "judge_full_top_m") else default_M, len(sorted_by_retr))]]
+    fp_query = normalized_query or facets_key_min
+    fp = fingerprint(model_id, getattr(settings, "rubric_version", settings.judge_rubric_version), fp_query, fused_ids)
+    gate_trace: Dict[str, Any] = {
+        "mode": "full",
+        "top_m": default_M,
+        "reason": "",
+        "signals": {},
+        "cache": {"hit": False, "key": fp, "age_secs": None},
+        "escalated": False,
+    }
+    judged_map: Dict[str, Dict[str, Any]] = {}
+
+    # Compute retrieval normalization for signals
+    retr_vals_all = [float(it.get("raw_score") or it.get("score") or 0.0) for it in sorted_by_retr]
+    rmax_all = max(retr_vals_all) if retr_vals_all else 0.0
+    rnorm_all = [(v / rmax_all) if rmax_all > 0 else 0.0 for v in retr_vals_all]
+
+    if getattr(settings, "judge_gate_enable", True):
+        # Request-level cache first
+        cached = judge_req_cache.get(fp)
+        if cached is not None:
+            cached_value, age = cached
+            if isinstance(cached_value, dict):
+                judged_map = {str(k): v for k, v in cached_value.items()}
+                gate_trace["cache"] = {"hit": True, "key": fp, "age_secs": int(age)}
+                gate_trace["mode"] = "skip"
+                gate_trace["reason"] = "cache_hit"
+        if not gate_trace["cache"]["hit"]:
+            # Signals and decision
+            signals = compute_signals(
+                facets,
+                sorted_by_retr,
+                dense_ids or [],
+                lex_ids or [],
+                rnorm_all,
+                k_eval=20,
+            )
+            gate_trace["signals"] = signals
+            system_ctx = {
+                "circuit_open": now < globals().get("_CB_DISABLED_UNTIL", 0.0),
+                "cost_guardrail_hit": False,
+            }
+            decision = decide_mode(signals, system_ctx)
+            gate_trace.update({k: decision[k] for k in ["mode", "top_m", "reason"]})
+            # cost guardrail
+            avg_tokens_per_item = 32
+            if not projected_cost_ok(
+                model_id,
+                int(gate_trace["top_m"]),
+                avg_tokens_per_item,
+                float(getattr(settings, "judge_cost_per_req_usd_max", 0.015)),
+                float(getattr(settings, "judge_daily_cost_usd_max", 10.0)),
+            ):
+                gate_trace["mode"] = "skip"
+                gate_trace["reason"] = "cost_guardrail"
+
+        # Adjust M by decision
+        if gate_trace["mode"] == "cheap":
+            M = min(int(getattr(settings, "judge_cheap_top_m", 12)), len(sorted_by_retr))
+            top = sorted_by_retr[:M]
+        elif gate_trace["mode"] == "full":
+            M = min(int(getattr(settings, "judge_full_top_m", default_M)), len(sorted_by_retr))
+            top = sorted_by_retr[:M]
+        else:
+            M = default_M
+            top = sorted_by_retr[:M]
+    else:
+        gate_trace = {"mode": "full", "top_m": default_M, "reason": "disabled", "signals": {}, "cache": {"hit": False, "key": fp, "age_secs": None}, "escalated": False}
+
+    # If request-level cache hit: skip LLM entirely and reuse judged_map
+    # Otherwise, proceed with per-item cache lookup/splitting
     global _CACHE_HITS, _CACHE_MISSES
     need_eval: List[Dict[str, Any]] = []
-    judged_map: Dict[str, Dict[str, Any]] = {}
-    for it in top:
-        pid = str(it.get("id"))
-        key = (facets_key, pid, model_id, settings.judge_rubric_version)
-        val = _JUDGE_CACHE.get(key)
-        if val and (now - val[1] <= ttl):
-            judged_map[pid] = val[0]
-            _CACHE_HITS += 1
-        else:
-            # Try minimal key before declaring a miss
-            key_min = (facets_key_min, pid, model_id, settings.judge_rubric_version)
-            val2 = _JUDGE_CACHE.get(key_min)
-            if val2 and (now - val2[1] <= ttl):
-                judged_map[pid] = val2[0]
+    if not gate_trace.get("cache", {}).get("hit"):
+        for it in top:
+            pid = str(it.get("id"))
+            key = (facets_key, pid, model_id, settings.judge_rubric_version)
+            val = _JUDGE_CACHE.get(key)
+            if val and (now - val[1] <= ttl):
+                judged_map[pid] = val[0]
                 _CACHE_HITS += 1
             else:
-                need_eval.append(it)
-                _CACHE_MISSES += 1
+                # Try minimal key before declaring a miss
+                key_min = (facets_key_min, pid, model_id, settings.judge_rubric_version)
+                val2 = _JUDGE_CACHE.get(key_min)
+                if val2 and (now - val2[1] <= ttl):
+                    judged_map[pid] = val2[0]
+                    _CACHE_HITS += 1
+                else:
+                    need_eval.append(it)
+                    _CACHE_MISSES += 1
 
-    # Batch evaluate uncached
-    for i in range(0, len(need_eval), bs):
-        batch = need_eval[i:i+bs]
-        try:
-            scored = judge_batch(facets, batch, model_id, settings)
-        except Exception:
-            scored = _heuristic_judge_batch(facets, batch, settings)
-        if not scored:
-            scored = _heuristic_judge_batch(facets, batch, settings)
+    # Batch evaluate uncached (in parallel threads)
+    batches: List[List[Dict[str, Any]]] = [need_eval[i:i+bs] for i in range(0, len(need_eval), bs)]
+    results: List[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = []
+    had_error = False
+    if batches and gate_trace.get("mode") != "skip" and not gate_trace.get("cache", {}).get("hit"):
+        max_workers = max(1, min(int(getattr(settings, "judge_concurrency", 3) or 3), len(batches)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            compact = gate_trace.get("mode") == "cheap"
+            future_to_batch = {executor.submit(judge_batch, facets, batch, model_id, settings, compact=compact): batch for batch in batches}
+            for fut in as_completed(future_to_batch):
+                batch = future_to_batch[fut]
+                try:
+                    scored = fut.result()
+                except Exception:
+                    had_error = True
+                    scored = _heuristic_judge_batch(facets, batch, settings)
+                if not scored:
+                    scored = _heuristic_judge_batch(facets, batch, settings)
+                results.append((batch, scored))
+
+    # Integrate results and update cache
+    for batch, scored in results:
         for obj in scored:
             pid = obj.get("id")
             if not pid:
@@ -301,9 +444,47 @@ def judge_rerank(
             ts = time.time()
             _JUDGE_CACHE[key] = (obj, ts)
             _JUDGE_CACHE[key_min] = (obj, ts)
-            # trim cache if too large
             if len(_JUDGE_CACHE) > settings.judge_cache_size:
                 _JUDGE_CACHE.pop(next(iter(_JUDGE_CACHE)))
+
+    # Post-check: if CHEAP produced problematic results, escalate to FULL once
+    if gate_trace.get("mode") == "cheap" and not gate_trace.get("cache", {}).get("hit"):
+        # Reconstruct list for head
+        tmp_scored = [dict(it) for it in top]
+        for it in tmp_scored:
+            pid = str(it.get("id"))
+            j = judged_map.get(pid)
+            if j:
+                it["judge_final"] = float(j.get("final_score") or 0.0)
+        if post_judge_quality_check(facets, tmp_scored):
+            gate_trace["escalated"] = True
+            # Re-run with FULL on current top
+            need_eval2 = [it for it in top if str(it.get("id")) not in judged_map]
+            batches2: List[List[Dict[str, Any]]] = [need_eval2[i:i+bs] for i in range(0, len(need_eval2), bs)]
+            results2: List[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = []
+            if batches2:
+                max_workers2 = max(1, min(int(getattr(settings, "judge_concurrency", 3) or 3), len(batches2)))
+                with ThreadPoolExecutor(max_workers=max_workers2) as executor:
+                    future_to_batch2 = {executor.submit(judge_batch, facets, batch, model_id, settings, compact=False): batch for batch in batches2}
+                    for fut in as_completed(future_to_batch2):
+                        batch = future_to_batch2[fut]
+                        try:
+                            scored = fut.result()
+                        except Exception:
+                            scored = _heuristic_judge_batch(facets, batch, settings)
+                        if not scored:
+                            scored = _heuristic_judge_batch(facets, batch, settings)
+                        results2.append((batch, scored))
+            for batch, scored in results2:
+                for obj in scored:
+                    pid = obj.get("id")
+                    if not pid:
+                        continue
+                    judged_map[str(pid)] = obj
+
+    # On repeated failures/timeouts, open circuit for a cooldown period
+    if had_error:
+        globals()["_CB_DISABLED_UNTIL"] = time.time() + float(getattr(settings, "judge_circuit_cooldown_secs", 120))
 
     # Normalize retrieval scores on top set
     retr_vals = [float(it.get("raw_score") or it.get("score") or 0.0) for it in top]
@@ -370,6 +551,33 @@ def judge_rerank(
     for it in updated:
         add_hints(it)
 
+    # Store request-level cache after successful judge (for this fused set)
+    if judged_map and getattr(settings, "judge_gate_enable", True) and not gate_trace.get("cache", {}).get("hit"):
+        try:
+            subset = {pid: judged_map.get(pid) for pid in fused_ids}
+            judge_req_cache.put(fp, subset)
+        except Exception:
+            pass
+
+    # Estimate cost saved
+    cost_saved = 0.0
+    if getattr(settings, "judge_gate_enable", True):
+        if gate_trace.get("cache", {}).get("hit"):
+            # assume full avoided
+            cost_saved = estimate_model_cost(model_id, int((getattr(settings, "judge_full_top_m", default_M)) * 32), 0)
+        elif gate_trace.get("mode") == "skip":
+            cost_saved = estimate_model_cost(model_id, int((getattr(settings, "judge_full_top_m", default_M)) * 32), 0)
+        elif gate_trace.get("mode") == "cheap":
+            full_cost = estimate_model_cost(model_id, int((getattr(settings, "judge_full_top_m", default_M)) * 32), 0)
+            cheap_cost = estimate_model_cost(model_id, int((getattr(settings, "judge_cheap_top_m", 12)) * 32), 0)
+            cost_saved = max(0.0, full_cost - cheap_cost)
+        add_judge_gate_event(
+            mode=gate_trace.get("mode", "full"),
+            cache_hit=bool(gate_trace.get("cache", {}).get("hit")),
+            escalated=bool(gate_trace.get("escalated")),
+            cost_saved_usd=float(cost_saved),
+        )
+
     trace = {
         "enabled": True,
         "model": model_id,
@@ -377,6 +585,7 @@ def judge_rerank(
         "batch_size": bs,
         "cached_hits": _CACHE_HITS,
         "cached_misses": _CACHE_MISSES,
+        "gate": gate_trace,
     }
     return updated, trace
 

@@ -30,6 +30,14 @@ class ComponentUsage:
 _lock = threading.Lock()
 _models: Dict[str, ModelUsage] = {}
 _components: Dict[str, ComponentUsage] = {}
+# Judge gate counters
+_judge_skipped = 0
+_judge_cheap = 0
+_judge_full = 0
+_judge_escalations = 0
+_judge_cache_hits = 0
+_judge_cache_misses = 0
+_judge_cost_saved_usd_est = 0.0
 
 
 def _percentile(values: List[float], p: float) -> float:
@@ -64,6 +72,28 @@ def add_usage(component: str, model: str | None, tokens_in: int, tokens_out: int
             mu.cost_usd_est += estimate_cost(model, int(tokens_in or 0), int(tokens_out or 0))
 
 
+def add_judge_gate_event(*, mode: str, cache_hit: bool, escalated: bool, cost_saved_usd: float) -> None:
+    global _judge_skipped, _judge_cheap, _judge_full, _judge_escalations, _judge_cache_hits, _judge_cache_misses, _judge_cost_saved_usd_est
+    with _lock:
+        if mode == "skip":
+            _judge_skipped += 1
+        elif mode == "cheap":
+            _judge_cheap += 1
+        elif mode == "full":
+            _judge_full += 1
+        if escalated:
+            _judge_escalations += 1
+        if cache_hit:
+            _judge_cache_hits += 1
+        else:
+            _judge_cache_misses += 1
+        _judge_cost_saved_usd_est += float(cost_saved_usd or 0.0)
+
+
+def estimate_model_cost(model: str, tokens_in: int, tokens_out: int) -> float:
+    return float(estimate_cost(model, int(tokens_in or 0), int(tokens_out or 0)))
+
+
 def snapshot() -> Dict[str, Any]:
     with _lock:
         models = {m: {
@@ -87,6 +117,15 @@ def snapshot() -> Dict[str, Any]:
             "uptime_secs": int(time.time() - START_TIME),
             "models": models,
             "components": comps,
+            "judge_gate": {
+                "skipped": _judge_skipped,
+                "cheap": _judge_cheap,
+                "full": _judge_full,
+                "escalations": _judge_escalations,
+                "cache_hits": _judge_cache_hits,
+                "cache_misses": _judge_cache_misses,
+                "cost_saved_usd_est": round(_judge_cost_saved_usd_est, 4),
+            },
         }
 
 

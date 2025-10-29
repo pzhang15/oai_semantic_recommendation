@@ -9,6 +9,7 @@ import numpy as np
 import time
 from typing import Tuple
 from openai import OpenAI
+import re
 
 # Allow running this script directly (so 'src' is importable)
 try:
@@ -52,11 +53,41 @@ def _parse_price(value: Any) -> Optional[float]:
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, str):
-        s = value.strip().replace("$", "").replace(",", "")
+        s = value.strip()
+        # handle ranges like "19.99-29.99" -> choose lower bound
+        if any(ch in s for ch in ["-", "–", "—", " to "]):
+            parts = [p for p in re.split(r"\s*(?:-|–|—|to)\s*", s) if p]
+            for p in parts:
+                try:
+                    return float(p.replace("$", "").replace(",", ""))
+                except Exception:
+                    continue
+            return None
+        s = s.replace("$", "").replace(",", "")
         try:
             return float(s)
         except ValueError:
             return None
+    if isinstance(value, dict):
+        # Common dict shapes: {amount, currency} or {value, currency}
+        for k in ["amount", "value", "price", "usd", "unit_amount"]:
+            v = value.get(k)
+            if isinstance(v, (int, float)):
+                return float(v)
+            if isinstance(v, str):
+                try:
+                    return float(v.replace("$", "").replace(",", "").strip())
+                except Exception:
+                    continue
+        # Fallback: scan all values for numeric-like
+        for v in value.values():
+            if isinstance(v, (int, float)):
+                return float(v)
+            if isinstance(v, str):
+                try:
+                    return float(v.replace("$", "").replace(",", "").strip())
+                except Exception:
+                    pass
     return None
 
 
@@ -81,6 +112,135 @@ def _build_text_for_embedding(title: str, brand: str, categories: List[str], fea
         segments.append(description)
     text = ". ".join(s for s in segments if s)
     return text[:max_len]
+def _infer_brand_from_title(title: str | None) -> Optional[str]:
+    if not title:
+        return None
+    t = str(title)
+    for marker in [" Men's", " Men's ", " men'", " Women's", " women's", " - ", " – ", ": "]:
+        idx = t.find(marker)
+        if idx > 0:
+            cand = t[:idx].strip()
+            if 2 <= len(cand) <= 80:
+                return cand
+    parts = t.split()
+    if parts and parts[0][0:1].isupper():
+        head = parts[0]
+        if len(parts) > 1 and parts[1][0:1].isupper():
+            head += " " + parts[1]
+        return head
+    return None
+
+
+def _extract_brand(raw: Dict[str, Any], title: str) -> Optional[str]:
+    # Tier 1: direct keys
+    brand = _to_string(_pick_first("brand", "brand_name", "manufacturer", "by", from_obj=raw))
+    if brand:
+        return brand
+    # Tier 2: details dict
+    det = raw.get("details")
+    if isinstance(det, dict):
+        for k in ["Brand", "brand", "Manufacturer", "maker", "label", "By"]:
+            v = det.get(k)
+            if v not in (None, ""):
+                s = _to_string(v)
+                if s:
+                    return s
+    # Tier 3: title inference
+    inferred = _infer_brand_from_title(title)
+    if inferred:
+        return inferred
+    return None
+
+
+def _extract_product_url(raw: Dict[str, Any], asin: str) -> Optional[str]:
+    for k in [
+        "product_url",
+        "url",
+        "detail_page_url",
+        "productURL",
+        "product_link",
+        "link",
+        "detail_url",
+        "canonical_url",
+        "productUrl",
+    ]:
+        v = raw.get(k)
+        if v not in (None, ""):
+            return _to_string(v)
+    if asin:
+        return f"https://www.amazon.com/dp/{asin}"
+    return None
+
+
+def _parse_int_with_suffix(text: str) -> Optional[int]:
+    t = (text or "").strip().lower()
+    m = re.search(r"([\d,.]+)\s*([kKmM]?)", t)
+    if not m:
+        return None
+    num = m.group(1).replace(",", "")
+    try:
+        val = float(num)
+    except Exception:
+        return None
+    suf = m.group(2)
+    if suf in ("k", "K"):
+        val *= 1_000
+    elif suf in ("m", "M"):
+        val *= 1_000_000
+    return int(val)
+
+
+def _extract_rating_count(raw: Dict[str, Any]) -> Optional[int]:
+    rc = _pick_first(
+        "rating_count",
+        "review_count",
+        "vote",
+        "ratings_count",
+        "ratings_total",
+        "total_ratings",
+        from_obj=raw,
+    )
+    if isinstance(rc, (int, float)):
+        return int(rc)
+    if isinstance(rc, str):
+        val = _parse_int_with_suffix(rc)
+        if val is not None:
+            return val
+    # details fallback
+    det = raw.get("details")
+    if isinstance(det, dict):
+        for k in ["ratings", "reviews", "review_count", "ratings_total", "votes"]:
+            v = det.get(k)
+            if isinstance(v, (int, float)):
+                return int(v)
+            if isinstance(v, str):
+                vv = _parse_int_with_suffix(v)
+                if vv is not None:
+                    return vv
+    return None
+
+
+def _extract_description(raw: Dict[str, Any], features: List[str]) -> tuple[str, List[str]]:
+    desc_str: str = ""
+    desc_list: List[str] = []
+    dv = _pick_first("description", from_obj=raw)
+    if isinstance(dv, list):
+        desc_list = _flatten_list(dv)
+        desc_str = " ".join(desc_list)
+    elif isinstance(dv, str):
+        desc_str = _to_string(dv)
+    # explicit description_list key
+    dl = raw.get("description_list")
+    if isinstance(dl, list) and not desc_list:
+        desc_list = _flatten_list(dl)
+    if not desc_str and desc_list:
+        desc_str = " ".join(desc_list)
+    # fallback to features when empty
+    if not desc_str and features:
+        desc_list = desc_list or list(features)
+        desc_str = " ".join(features)
+    return desc_str, desc_list
+
 
 
 def _normalize_record(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -100,18 +260,14 @@ def _normalize_record(raw: Dict[str, Any]) -> Dict[str, Any]:
         )
     )
     title = _to_string(_pick_first("title", from_obj=raw))
-    brand = _to_string(_pick_first("brand", from_obj=raw))
+    main_category = _to_string(_pick_first("main_category", "domain", from_obj=raw))
+    brand = _extract_brand(raw, title)
 
     categories = _flatten_list(_pick_first("categories", from_obj=raw))
     features = _flatten_list(_pick_first("feature", "features", from_obj=raw))
+    description, description_list = _extract_description(raw, features)
 
-    desc_val = _pick_first("description", from_obj=raw)
-    if isinstance(desc_val, list):
-        description = " ".join(_flatten_list(desc_val))
-    else:
-        description = _to_string(desc_val)
-
-    price = _parse_price(_pick_first("price", from_obj=raw))
+    price = _parse_price(_pick_first("price", "current_price", "sale_price", "list_price", from_obj=raw))
 
     rating = None
     rating_src = _pick_first("rating", "average_rating", "overall", from_obj=raw)
@@ -123,31 +279,108 @@ def _normalize_record(raw: Dict[str, Any]) -> Dict[str, Any]:
         except ValueError:
             rating = None
 
-    rating_count = None
-    rc_src = _pick_first("rating_count", "review_count", "vote", "ratings_count", from_obj=raw)
-    if isinstance(rc_src, (int, float)):
-        rating_count = int(rc_src)
-    elif isinstance(rc_src, str):
-        try:
-            rating_count = int(float(rc_src))
-        except ValueError:
-            rating_count = None
+    rating_count = _extract_rating_count(raw)
 
-    image_url = None
-    img_src = _pick_first(
-        "imUrl",
-        "imageURLHighRes",
-        "imageURL",
-        "image",
-        "image_url",
-        from_obj=raw,
-    )
-    if isinstance(img_src, list):
-        image_url = _to_string(img_src[0] if img_src else None)
+    def _extract_image_url(obj: Dict[str, Any]) -> Optional[str]:
+        # Common direct keys
+        for k in [
+            "imageURLHighRes",
+            "imageURL",
+            "imUrl",
+            "image_url",
+            "image"
+        ]:
+            if k in obj and obj[k] not in (None, ""):
+                v = obj[k]
+                if isinstance(v, list) and v:
+                    s = _to_string(v[0])
+                    if s:
+                        return s
+                elif isinstance(v, dict):
+                    for kk in ["large", "medium", "small", "url", "link"]:
+                        if kk in v and v[kk]:
+                            s = _to_string(v[kk])
+                            if s:
+                                return s
+                else:
+                    s = _to_string(v)
+                    if s:
+                        return s
+        # Alternate list-like keys
+        for k in ["images", "imageUrls", "image_urls", "images_highres", "pictures"]:
+            v = obj.get(k)
+            if isinstance(v, list) and v:
+                # pick first non-empty string or dict url
+                for item in v:
+                    if isinstance(item, str) and item.strip():
+                        return item.strip()
+                    if isinstance(item, dict):
+                        for kk in ["url", "link", "large", "medium", "small"]:
+                            if kk in item and item[kk]:
+                                s = _to_string(item[kk])
+                                if s:
+                                    return s
+        return None
+
+    image_url = _extract_image_url(raw)
+
+    product_url = _extract_product_url(raw, asin)
+
+    # Images: collect list of URLs if present
+    images: List[str] = []
+    for key in ["imageURLHighRes", "imageURL", "images", "image_urls", "imageUrls", "images_highres", "pictures"]:
+        v = raw.get(key)
+        if isinstance(v, list):
+            for item in v:
+                if isinstance(item, str) and item.strip():
+                    images.append(item.strip())
+                elif isinstance(item, dict):
+                    for kk in ["hi_res", "large", "medium", "small", "url", "link"]:
+                        if kk in item and item[kk]:
+                            s = _to_string(item[kk])
+                            if s:
+                                images.append(s)
+        elif isinstance(v, str) and v.strip():
+            images.append(v.strip())
+        elif isinstance(v, dict):
+            for kk in ["hi_res", "large", "medium", "small", "url", "link"]:
+                if kk in v and v[kk]:
+                    s = _to_string(v[kk])
+                    if s:
+                        images.append(s)
+    # ensure primary image_url if not set
+    if not image_url and images:
+        image_url = images[0]
+
+    # Videos: list of URLs if available
+    videos: List[str] = []
+    vsrc = raw.get("videos") or raw.get("video")
+    if isinstance(vsrc, list):
+        for item in vsrc:
+            if isinstance(item, str) and item.strip():
+                videos.append(item.strip())
+            elif isinstance(item, dict):
+                for kk in ["url", "link", "src"]:
+                    if kk in item and item[kk]:
+                        s = _to_string(item[kk])
+                        if s:
+                            videos.append(s)
+    elif isinstance(vsrc, dict):
+        for kk in ["url", "link", "src"]:
+            if kk in vsrc and vsrc[kk]:
+                s = _to_string(vsrc[kk])
+                if s:
+                    videos.append(s)
+
+    store = _to_string(_pick_first("store", "store_name", "seller", from_obj=raw))
+    parent_asin = _to_string(_pick_first("parent_asin", "parentAsin", from_obj=raw))
+    details_obj = raw.get("details") if isinstance(raw, dict) else None
+    details = json.dumps(details_obj, ensure_ascii=False) if isinstance(details_obj, dict) else None
+    bought_together_list = raw.get("bought_together") or raw.get("also_bought") or []
+    if not isinstance(bought_together_list, list):
+        bought_together = []
     else:
-        image_url = _to_string(img_src)
-
-    product_url = _to_string(_pick_first("product_url", "url", from_obj=raw))
+        bought_together = [str(x) for x in bought_together_list if x is not None]
 
     text_for_embedding = _build_text_for_embedding(
         title=title,
@@ -160,16 +393,26 @@ def _normalize_record(raw: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": asin or None,
         "asin": asin or None,
+        "parent_asin": parent_asin or None,
+        "main_category": main_category or None,
         "title": title or None,
         "brand": brand or None,
         "categories": categories,
         "features": features,
         "description": description or None,
+        "description_list": description_list,
         "price": price,
         "rating": rating,
+        "average_rating": rating,
         "rating_count": rating_count,
+        "rating_number": rating_count,
         "image_url": image_url or None,
         "product_url": product_url or None,
+        "images": images,
+        "videos": videos,
+        "store": store or None,
+        "details": details,
+        "bought_together": bought_together,
         "text_for_embedding": text_for_embedding or None,
     }
 
@@ -205,16 +448,26 @@ def _to_table(records: List[Dict[str, Any]]):
         [
             pa.field("id", pa.string()),
             pa.field("asin", pa.string()),
+            pa.field("parent_asin", pa.string()),
+            pa.field("main_category", pa.string()),
             pa.field("title", pa.string()),
             pa.field("brand", pa.string()),
             pa.field("categories", pa.list_(pa.string())),
             pa.field("features", pa.list_(pa.string())),
             pa.field("description", pa.string()),
+            pa.field("description_list", pa.list_(pa.string())),
             pa.field("price", pa.float64()),
             pa.field("rating", pa.float64()),
+            pa.field("average_rating", pa.float64()),
             pa.field("rating_count", pa.int64()),
+            pa.field("rating_number", pa.int64()),
             pa.field("image_url", pa.string()),
             pa.field("product_url", pa.string()),
+            pa.field("images", pa.list_(pa.string())),
+            pa.field("videos", pa.list_(pa.string())),
+            pa.field("store", pa.string()),
+            pa.field("details", pa.string()),
+            pa.field("bought_together", pa.list_(pa.string())),
             pa.field("text_for_embedding", pa.string()),
         ]
     )
@@ -391,6 +644,7 @@ def main() -> None:
     parser.add_argument("--data", dest="data", type=str, default=os.getenv("DATASET_PATH"), help="Path to JSONL dataset")
     parser.add_argument("--embed", action="store_true", help="Compute embeddings for products.parquet and write artifacts")
     parser.add_argument("--build-faiss", action="store_true", help="Build FAISS index from saved embeddings.npy")
+    parser.add_argument("--build-lexical", action="store_true", help="Build TF-IDF lexical index artifacts")
     args = parser.parse_args()
     repo_root = Path(__file__).resolve().parents[1]
 
@@ -405,6 +659,10 @@ def main() -> None:
         _embed_all(repo_root)
     if args.build_faiss or args.build_faiss is True:
         _build_faiss(repo_root)
+    if args.build_lexical:
+        from src.core.lexical_build import build_lexical
+        out = build_lexical(repo_root)
+        print(json.dumps(out))
 
 
 if __name__ == "__main__":

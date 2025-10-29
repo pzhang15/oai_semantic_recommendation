@@ -1,0 +1,105 @@
+%% File-level map of major components -> key files (stretched for readability)
+
+graph TB
+
+  %% App / Routers
+  subgraph App_and_Boot
+    APP[src/app.py]
+  end
+
+  subgraph Routers
+    RSEARCH[src/routers/search.py]
+    ROUTFIT[src/routers/outfit.py]
+    RDEBUG[src/routers/debug.py]
+  end
+
+  %% Core (split into functional clusters)
+  subgraph Core_Config
+    CFG[src/core/config.py]
+  end
+
+  subgraph Core_Pipeline
+    PARSER[src/core/parser.py]
+    EMB[src/core/embedding.py]
+    FAISS[src/core/faiss_store.py]
+    RET[src/core/retriever.py]
+    FILT[src/core/filters.py]
+    JUDGE[src/core/rerank.py]
+    MMR[src/core/mmr.py]
+    OUTFIT[src/core/outfit.py]
+  end
+
+  %% Models / Telemetry / Scripts
+  subgraph Models
+    MSCH[src/models/schemas.py]
+    MOUT[src/models/outfit.py]
+    NORM[src/models/normalize.py]
+  end
+
+  subgraph Telemetry
+    TMR[src/telemetry/timer.py]
+    CNT[src/telemetry/counters.py]
+    CST[src/telemetry/costs.py]
+  end
+
+  subgraph Scripts
+    IDX[scripts/index.py]
+  end
+
+  %% Data Artifacts
+  subgraph Data_Artifacts
+    P[products.parquet]
+    IDS[ids.json]
+    STATS[stats.json]
+    FIDX[index.faiss]
+  end
+
+  %% Hubs to reduce line crossings
+  HUB_Routers["Routers → Core"]
+  HUB_CoreDeps["Core → Config/Models/Telemetry"]
+
+  %% App to Routers
+  APP --> RSEARCH
+  APP --> ROUTFIT
+  APP --> RDEBUG
+
+  %% Routers to hub, then to core stages
+  RSEARCH --> HUB_Routers
+  ROUTFIT --> HUB_Routers
+  HUB_Routers --> PARSER
+  HUB_Routers --> EMB
+  HUB_Routers --> FAISS
+  HUB_Routers --> RET
+  HUB_Routers --> FILT
+  HUB_Routers --> JUDGE
+  HUB_Routers --> MMR
+  HUB_Routers --> OUTFIT
+
+  %% Core dependencies hub
+  PARSER --> HUB_CoreDeps
+  EMB --> HUB_CoreDeps
+  FAISS --> HUB_CoreDeps
+  RET --> HUB_CoreDeps
+  FILT --> HUB_CoreDeps
+  JUDGE --> HUB_CoreDeps
+  MMR --> HUB_CoreDeps
+  OUTFIT --> HUB_CoreDeps
+
+  %% Fan out from deps hub
+  HUB_CoreDeps --> CFG
+  HUB_CoreDeps --> MSCH
+  HUB_CoreDeps --> MOUT
+  HUB_CoreDeps --> NORM
+  HUB_CoreDeps -.-> TMR
+  HUB_CoreDeps -.-> CNT
+  CNT -.-> CST
+
+  %% Data endpoints (keep simple, minimal crossings)
+  RET --> P
+  RET --> IDS
+  FAISS --> FIDX
+  FAISS --> STATS
+  IDX --> P
+  IDX --> FIDX
+  IDX --> IDS
+  IDX --> STATS

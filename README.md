@@ -58,6 +58,26 @@ curl http://127.0.0.1:8000/healthz
 
 Note: temperature=0 is used when supported; we auto-fallback if the model rejects custom temperature.
 
+## Judge Gating
+Judge gating reduces latency and cost by running LLM judging only when it helps.
+
+- Modes: SKIP (no judge), CHEAP (compact prompt, small top_m), FULL (standard)
+- Request-level cache: keyed by SHA-1 of `(model, rubric_version, normalized query, fused topM ids)`
+- Signals: retrieval margin/entropy, dense↔lexical Jaccard, budget/category/dup ratios, specificity
+- Telemetry: `/debug/stats` → `judge_gate` shows skipped/cheap/full, escalations, cache hits/misses, and `cost_saved_usd_est`
+
+Config knobs (env, with defaults):
+- `JUDGE_GATE_ENABLE=true`
+- `JUDGE_CHEAP_TOP_M=12`, `JUDGE_FULL_TOP_M=24`
+- `JUDGE_MARGIN_SKIP_MIN=0.05`, `JUDGE_ENTROPY_SKIP_MAX=1.2`, `JUDGE_JACCARD_SKIP_MIN=0.6`
+- `JUDGE_BUDGET_OK_SKIP_MIN=0.8`, `JUDGE_CATEGORY_OK_SKIP_MIN=0.7`, `JUDGE_DUP_SKIP_MAX=0.25`
+- `JUDGE_TOLERANCE_BUDGET=0.05`, `JUDGE_GATE_TIMEOUT_SECS=10`
+- `JUDGE_CACHE_SIZE=8000`, `JUDGE_CACHE_TTL_SECS=86400`
+- `JUDGE_COST_PER_REQ_USD_MAX=0.015`, `JUDGE_DAILY_COST_USD_MAX=10`
+- `RUBRIC_VERSION=1` (bump when changing the judge prompt/rubric)
+
+Public API responses are unchanged; the `trace` (when `debug=true`) now includes a `judge_gate` object with mode, top_m, reason, signals, cache, and escalation info.
+
 ## Endpoints
 - `GET /healthz`
 - `POST /debug/retrieve` body: `{ "query": "...", "k": 10 }`

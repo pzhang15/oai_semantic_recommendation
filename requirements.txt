@@ -14,7 +14,8 @@ openai>=1.40,<2
 httpx>=0.27
 
 # Optional (comment in if you want lexical retrieval and more utilities)
-# scikit-learn>=1.5     # pulls scipy; only if you need it
+scikit-learn>=1.5       # pulls scipy for TF-IDF
+joblib>=1.4
 # orjson>=3.9           # faster JSON on most platforms
 # tqdm>=4.66            # progress bars
 # tenacity>=8.2         # robust retries

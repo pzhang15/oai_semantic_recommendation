@@ -19,6 +19,7 @@ from src.models.normalize import (
 )
 from src.telemetry.timer import span
 from src.telemetry.counters import add_usage
+from src.core.clients import get_openai_client
 
 
 class ParserError(Exception):
@@ -384,7 +385,7 @@ def parse_query(text: str, *, model: Optional[str] = None, retries: int | None =
     if cached:
         return cached
 
-    client = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
+    client = get_openai_client()
 
     schema = build_structured_output_schema(QueryFacets, name="query_facets")
 

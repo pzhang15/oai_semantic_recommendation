@@ -97,3 +97,15 @@ data/
 *.npy
 *.faiss
 
+# Reports and generated outputs
+reports/
+docs/*.png
+docs/*.pdf
+
+# Frontend artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.env
+frontend/.env.local
+

@@ -65,3 +65,4 @@ def build_structured_output_schema(model: type[BaseModel], name: str) -> dict:
 class RetrieveRequest(BaseModel):
     query: str
     k: int = 12
+    use_hybrid: bool | None = None

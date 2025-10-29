@@ -6,6 +6,7 @@ from openai import OpenAI
 from src.core.config import get_settings
 from src.telemetry.timer import span
 from src.telemetry.counters import add_usage
+from src.core.clients import get_openai_client
 
 
 def _sanitize(text: str) -> str:
@@ -20,7 +21,7 @@ def embed_query(text: str, model: Optional[str] = None) -> np.ndarray:
     if not query:
         raise ValueError("Query is empty after normalization")
 
-    client = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
+    client = get_openai_client()
     use_model = model or settings.model_embed
     with span("embed_query") as sp:
         resp = client.embeddings.create(model=use_model, input=[query])

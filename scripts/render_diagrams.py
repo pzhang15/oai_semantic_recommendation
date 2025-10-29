@@ -10,6 +10,8 @@ FILES = [
     (DOCS / "architecture.mmd", [DOCS / "architecture.png", DOCS / "architecture.pdf"]),
     (DOCS / "search-sequence.mmd", [DOCS / "search-sequence.png"]),
     (DOCS / "outfit-sequence.mmd", [DOCS / "outfit-sequence.png"]),
+    (DOCS / "full-sequence.mmd", [DOCS / "full-sequence.png"]),
+    (DOCS / "file-map.mmd", [DOCS / "file-map.png"]),
 ]
 
 # PNG quality controls (env overrides)

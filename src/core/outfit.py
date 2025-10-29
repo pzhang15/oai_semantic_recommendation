@@ -15,6 +15,7 @@ from src.models.outfit import OutfitItem, OutfitPlan, build_outfit_schema
 from src.models.normalize import CANON_COLORS, CANON_MATERIALS
 from src.telemetry.timer import span
 from src.telemetry.counters import add_usage
+from src.core.clients import get_openai_client
 
 
 SLOT_MAP = {
@@ -123,7 +124,7 @@ def _call_chat_completion(client: OpenAI, model_id: str, messages: list[dict], s
 
 
 def compose_outfit(facets, pool: List[Dict[str, Any]], settings) -> OutfitPlan:
-    client = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
+    client = get_openai_client()
     schema = build_outfit_schema()
     sys_prompt = (
         "Compose a coherent outfit from the candidate pool. Fill required slots first; ensure color/material harmony; "
@@ -153,16 +154,16 @@ def compose_outfit(facets, pool: List[Dict[str, Any]], settings) -> OutfitPlan:
             attempt += 1
             if last_err:
                 messages[-1] = {"role": "user", "content": messages[-1]["content"] + f"\nNote: Fix previous issue: {last_err}"}
-    with span("outfit") as sp:
-        resp = _call_chat_completion(client, settings.outfit_model, messages, schema, settings.outfit_max_tokens, settings.outfit_timeout_secs)
+            with span("outfit") as sp:
+                resp = _call_chat_completion(client, settings.outfit_model, messages, schema, settings.outfit_max_tokens, settings.outfit_timeout_secs)
             content = resp.choices[0].message.content or "{}"
-    try:
-        usage = getattr(resp, "usage", None)
-        tin = int(getattr(usage, "prompt_tokens", 0) or 0)
-        tout = int(getattr(usage, "completion_tokens", 0) or 0)
-    except Exception:
-        tin = tout = 0
-    add_usage("outfit", settings.outfit_model, tin, tout, sp.ms)
+            try:
+                usage = getattr(resp, "usage", None)
+                tin = int(getattr(usage, "prompt_tokens", 0) or 0)
+                tout = int(getattr(usage, "completion_tokens", 0) or 0)
+            except Exception:
+                tin = tout = 0
+            add_usage("outfit", settings.outfit_model, tin, tout, sp.ms)
             data = json.loads(content)
             plan = OutfitPlan.model_validate(data)
             return plan

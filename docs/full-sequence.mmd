@@ -1,0 +1,35 @@
+%% High level request flow for search and outfit
+
+flowchart TD
+  A[Client UI] --> B[FastAPI Router]
+
+  subgraph Pipeline
+    B --> C[Parser LLM Structured Outputs]
+    C --> D[Embedding OpenAI]
+    D --> E[FAISS Search IndexFlatIP]
+    E --> F[Retriever ids to products join]
+    F --> G[Filters budget category gender constraints]
+    G --> H{Judge enabled}
+    H -- yes --> I[Judge LLM batch cache]
+    I --> J[Blend scores alpha]
+    H -- no --> J[Blend scores alpha]
+    J --> K[MMR Diversity vector or title]
+  end
+
+  K --> L[SearchResponse items summary trace]
+
+  %% Outfit path reuses pool after Judge
+  J --> M[Prepare Outfit Pool slot color material]
+  M --> N[Composer LLM Structured Outputs]
+  N --> O[Finalize dedupe totals required slots]
+  O --> P[OutfitResponse slots total under_budget trace]
+
+  %% Telemetry taps
+  subgraph Telemetry
+    Q[Timers Tokens Cost]
+  end
+  C -.-> Q
+  D -.-> Q
+  I -.-> Q
+  N -.-> Q
+  B -.-> Q
