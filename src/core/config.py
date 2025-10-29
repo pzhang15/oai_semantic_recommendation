@@ -101,9 +101,9 @@ class Config:
         except ValueError:
             self.judge_timeout_secs = 10
         try:
-            self.judge_max_tokens: int = int(os.getenv("JUDGE_MAX_TOKENS", "500"))
+            self.judge_max_tokens: int = int(os.getenv("JUDGE_MAX_TOKENS", "220"))
         except ValueError:
-            self.judge_max_tokens = 500
+            self.judge_max_tokens = 220
         try:
             self.judge_alpha: float = float(os.getenv("JUDGE_ALPHA", "0.5"))
         except ValueError:
@@ -134,13 +134,13 @@ class Config:
         # Judge gate (gating, cache, guardrails)
         self.judge_gate_enable: bool = os.getenv("JUDGE_GATE_ENABLE", "true").lower() == "true"
         try:
-            self.judge_cheap_top_m: int = int(os.getenv("JUDGE_CHEAP_TOP_M", "12"))
+            self.judge_cheap_top_m: int = int(os.getenv("JUDGE_CHEAP_TOP_M", "10"))
         except ValueError:
-            self.judge_cheap_top_m = 12
+            self.judge_cheap_top_m = 10
         try:
-            self.judge_full_top_m: int = int(os.getenv("JUDGE_FULL_TOP_M", "24"))
+            self.judge_full_top_m: int = int(os.getenv("JUDGE_FULL_TOP_M", "20"))
         except ValueError:
-            self.judge_full_top_m = 24
+            self.judge_full_top_m = 20
         try:
             self.judge_margin_skip_min: float = float(os.getenv("JUDGE_MARGIN_SKIP_MIN", "0.05"))
         except ValueError:
@@ -178,13 +178,59 @@ class Config:
         except ValueError:
             self.judge_gate_timeout_secs = 10
         try:
-            self.judge_cost_per_req_usd_max: float = float(os.getenv("JUDGE_COST_PER_REQ_USD_MAX", "0.015"))
+            self.judge_cost_per_req_usd_max: float = float(os.getenv("JUDGE_COST_PER_REQ_USD_MAX", "0.02"))
         except ValueError:
-            self.judge_cost_per_req_usd_max = 0.015
+            self.judge_cost_per_req_usd_max = 0.02
         try:
             self.judge_daily_cost_usd_max: float = float(os.getenv("JUDGE_DAILY_COST_USD_MAX", "10"))
         except ValueError:
             self.judge_daily_cost_usd_max = 10.0
+        # Cost sensitivity knobs
+        try:
+            self.judge_avg_tokens_per_item: int = int(os.getenv("JUDGE_AVG_TOKENS_PER_ITEM", "20"))
+        except ValueError:
+            self.judge_avg_tokens_per_item = 20
+        self.judge_cost_degrade_to_cheap: bool = os.getenv("JUDGE_COST_DEGRADE_TO_CHEAP", "true").lower() == "true"
+
+        # Query expansion
+        self.expansion_enabled: bool = os.getenv("EXPANSION_ENABLED", "true").lower() == "true"
+        try:
+            self.expansion_max_det: int = int(os.getenv("EXPANSION_MAX_DET", "2"))
+        except ValueError:
+            self.expansion_max_det = 2
+        self.expansion_allow_llm: bool = os.getenv("EXPANSION_ALLOW_LLM", "false").lower() == "true"
+        try:
+            self.expansion_llm_max: int = int(os.getenv("EXPANSION_LLM_MAX", "1"))
+        except ValueError:
+            self.expansion_llm_max = 1
+        try:
+            self.expansion_weight_base: float = float(os.getenv("EXPANSION_WEIGHT_BASE", "1.0"))
+        except ValueError:
+            self.expansion_weight_base = 1.0
+        try:
+            self.expansion_weight_det1: float = float(os.getenv("EXPANSION_WEIGHT_DET1", "0.8"))
+        except ValueError:
+            self.expansion_weight_det1 = 0.8
+        try:
+            self.expansion_weight_det2: float = float(os.getenv("EXPANSION_WEIGHT_DET2", "0.6"))
+        except ValueError:
+            self.expansion_weight_det2 = 0.6
+        try:
+            self.expansion_weight_llm: float = float(os.getenv("EXPANSION_WEIGHT_LLM", "0.5"))
+        except ValueError:
+            self.expansion_weight_llm = 0.5
+        try:
+            self.rrf_k: int = int(os.getenv("RRF_K", "60"))
+        except ValueError:
+            self.rrf_k = 60
+        try:
+            self.expansion_time_budget_ms: float = float(os.getenv("EXPANSION_TIME_BUDGET_MS", "40"))
+        except ValueError:
+            self.expansion_time_budget_ms = 40.0
+        # When FAISS time exceeds budget, still run lexical-only expansions
+        self.expansion_lex_only_over_budget: bool = os.getenv("EXPANSION_LEX_ONLY_OVER_BUDGET", "true").lower() == "true"
+        # Prefer lex-only expansions to avoid extra embedding calls
+        self.expansion_dense_for_det: bool = os.getenv("EXPANSION_DENSE_FOR_DET", "false").lower() == "true"
         # Rubric version bumping for cache invalidation
         try:
             self.rubric_version: int = int(os.getenv("RUBRIC_VERSION", "1"))

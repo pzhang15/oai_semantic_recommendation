@@ -73,19 +73,131 @@ def _extract_negation_phrases(text: str) -> List[str]:
     return out
 
 
+def _extract_materials(text: str) -> List[str]:
+    t = (text or "").strip().lower()
+    found: set[str] = set()
+    if "vegan leather" in t or "faux leather" in t or "pu leather" in t:
+        found.add("vegan leather")
+    keywords = [
+        "linen","cotton","wool","cashmere","silk","polyester","nylon","spandex","leather","denim","fleece","down"
+    ]
+    if "elastane" in t or "lycra" in t:
+        found.add("spandex")
+    if re.search(r"\bpoly\b", t):
+        found.add("polyester")
+    for k in keywords:
+        if k in t:
+            found.add(k)
+    return sorted(found)
+
+
+def _extract_categories(text: str) -> List[str]:
+    t = (text or "").strip().lower()
+    found: set[str] = set()
+    mapping = {
+        "t-shirt": ["t-shirt", "tshirt", "tee", "t shirt"],
+        "shirt": ["shirt", "button-down", "button down", "oxford"],
+        "polo": ["polo"],
+        "blouse": ["blouse"],
+        "dress": ["dress"],
+        "jeans": ["jeans"],
+        "pants": ["pants", "trousers", "chinos"],
+        "shorts": ["shorts"],
+        "skirt": ["skirt"],
+        "sneakers": ["sneakers", "sneaker", "trainers", "running shoes"],
+        "boots": ["boots", "boot", "chelsea boots"],
+        "sandals": ["sandals", "sandal"],
+        "jacket": ["jacket"],
+        "coat": ["coat", "parka", "puffer"],
+        "sweater": ["sweater", "knit"],
+        "hoodie": ["hoodie", "hooded"],
+        "accessories": ["belt", "hat", "cap", "scarf", "gloves"],
+        "handbag": ["handbag", "bag", "purse"],
+        "backpack": ["backpack", "pack"],
+    }
+    for canon, keys in mapping.items():
+        if any(k in t for k in keys):
+            found.add(canon)
+    return sorted(found)
+
+
+def _extract_gender_and_size(text: str) -> Tuple[Optional[str], Optional[str]]:
+    t = (text or "").strip().lower()
+    gender: Optional[str] = None
+    size: Optional[str] = None
+    if re.search(r"\bmen\b|men's|mens\b", t):
+        gender = "men"
+    elif re.search(r"\bwomen\b|women's|womens\b|ladies\b", t):
+        gender = "women"
+    elif re.search(r"\bunisex\b", t):
+        gender = "unisex"
+    elif re.search(r"\bgirls\b", t):
+        gender = "girls"
+    elif re.search(r"\bboys\b", t):
+        gender = "boys"
+    m = re.search(r"\b(XXL|XL|XS|S|M|L)\b", t)
+    if m:
+        size = m.group(1)
+    if size is None:
+        m = re.search(r"\bUS\s*([0-9]{1,2}(?:\.[0-9])?)\b", text, re.IGNORECASE)
+        if m:
+            size = f"US {m.group(1)}"
+    if size is None:
+        m = re.search(r"\b([2-5][0-9])\s*(?:x|×|waist)\s*([2-5][0-9])?\b", t)
+        if m:
+            size = m.group(0)
+    return gender, size
+
+
+def _extract_occasion(text: str) -> Optional[str]:
+    t = (text or "").strip().lower()
+    checks: List[Tuple[List[str], str]] = [
+        (["gym", "workout", "training"], "gym"),
+        (["wedding"], "wedding"),
+        (["beach"], "beach"),
+        (["office", "work"], "office"),
+        (["party"], "party"),
+        (["travel", "trip", "commute"], "travel"),
+        (["rain", "rainy"], "rainy-day"),
+        (["outdoor", "hike", "hiking"], "outdoor"),
+        (["cold", "winter"], "cold-weather"),
+        (["hot", "summer"], "hot-weather"),
+    ]
+    for keywords, label in checks:
+        if any(k in t for k in keywords):
+            return label
+    return None
+
+
+def _extract_must_haves(text: str) -> List[str]:
+    t = (text or "").strip().lower()
+    found: set[str] = set()
+    synonyms = {
+        "waterproof": ["waterproof", "water proof", "rain-proof", "rainproof"],
+        "water-resistant": ["water resistant", "water-resistant", "water resist"],
+        "breathable": ["breathable", "well-ventilated", "vented"],
+        "pockets": ["pockets", "with pockets"],
+        "hood": ["hood", "hooded"],
+        "lightweight": ["lightweight", "light weight", "light-weight"],
+        "insulated": ["insulated", "warm", "padded"],
+        "quick-dry": ["quick dry", "quick-dry", "fast drying"],
+        "stretchy": ["stretchy", "stretch", "elastic"],
+        "packable": ["packable", "packs small"],
+        "slip resistant": ["slip resistant", "non slip", "anti slip"],
+    }
+    for canon, keys in synonyms.items():
+        if any(k in t for k in keys):
+            found.add(canon)
+    if "water-resistant" in found and ("rain" in t or "rainy" in t or "commute" in t):
+        found.add("waterproof")
+    return sorted(found)
+
+
 def parse_deterministic(text: str) -> DetParseResult:
     t0 = time.perf_counter()
     q = " ".join((text or "").split())
     if not q:
         return DetParseResult(QueryFacets(), 0.0, {"low_info": True}, {}, 0.0)
-
-    from src.core.parser import (
-        _extract_materials,
-        _extract_categories,
-        _extract_gender_and_size,
-        _extract_occasion,
-        _extract_must_haves,
-    )
 
     # Extract raw candidates
     cats = _extract_categories(q)

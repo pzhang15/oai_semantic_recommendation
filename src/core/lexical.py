@@ -39,6 +39,20 @@ def ready() -> Dict[str, Any]:
 def _compose_query_text(query_text: str, facets: Any | None) -> str:
     txt = (query_text or "").strip()
     if not facets:
+        # Heuristic synonym expansion for common domains to improve recall
+        t = txt.lower()
+        extra_terms: List[str] = []
+        try:
+            if "swimming" in t or "swim" in t:
+                extra_terms.extend(["swim goggles", "swimsuit", "swim cap", "snorkel", "fins", "swimwear"])
+            if "hiking" in t or "hike" in t:
+                extra_terms.extend(["hiking boots", "trail shoes", "backpack", "trekking poles"])
+            if "running" in t or "run" in t:
+                extra_terms.extend(["running shoes", "sneakers", "breathable", "lightweight"])
+        except Exception:
+            pass
+        if extra_terms:
+            txt = (txt + " " + " ".join(extra_terms)).strip()
         return txt
     tokens: List[str] = []
     try:
@@ -59,7 +73,10 @@ def _compose_query_text(query_text: str, facets: Any | None) -> str:
 def search_lexical(query_text: str, k: int, facets: Any | None = None, return_timings: bool = False):
     import time as _t
     t0 = _t.perf_counter()
+    # Load artifacts (cached after first call)
     vectorizer, X_docs, ids = _load_artifacts()
+    t_load_done = _t.perf_counter()
+    # Compose final query text after load to isolate compose time
     q = _compose_query_text(query_text, facets)
     t1 = _t.perf_counter()
     Xq = vectorizer.transform([q])
@@ -83,7 +100,8 @@ def search_lexical(query_text: str, k: int, facets: Any | None = None, return_ti
     t4 = _t.perf_counter()
     if return_timings:
         timings = {
-            "lex_compose_ms": round((t1 - t0) * 1000.0, 2),
+            "lex_load_ms": round((t_load_done - t0) * 1000.0, 2),
+            "lex_compose_ms": round((t1 - t_load_done) * 1000.0, 2),
             "lex_transform_ms": round((t2 - t1) * 1000.0, 2),
             "lex_matvec_ms": round((t3 - t2) * 1000.0, 2),
             "lex_topk_ms": round((t4 - t3) * 1000.0, 2),

@@ -11,7 +11,7 @@ from openai import BadRequestError, OpenAI
 from src.core.config import get_settings
 from src.models.schemas import QueryFacets
 from src.telemetry.timer import span
-from src.telemetry.counters import add_usage, add_judge_gate_event, estimate_model_cost
+from src.telemetry.counters import add_usage, add_judge_gate_event, estimate_model_cost, snapshot as telemetry_snapshot
 from src.core.clients import get_openai_client
 from src.core.judge_gate import (
     compute_signals,
@@ -365,16 +365,36 @@ def judge_rerank(
             decision = decide_mode(signals, system_ctx)
             gate_trace.update({k: decision[k] for k in ["mode", "top_m", "reason"]})
             # cost guardrail
-            avg_tokens_per_item = 32
+            avg_tokens_per_item = int(getattr(settings, "judge_avg_tokens_per_item", 32) or 32)
+            # Compute projected cost for trace visibility
+            projected_req_usd = float(estimate_model_cost(model_id, int(gate_trace["top_m"]) * avg_tokens_per_item, 0))
+            per_req_cap = float(getattr(settings, "judge_cost_per_req_usd_max", 0.015))
+            day_cap = float(getattr(settings, "judge_daily_cost_usd_max", 10.0))
+            try:
+                snap = telemetry_snapshot()
+                spent_today = float(sum(float(row.get("cost_usd_est", 0.0) or 0.0) for row in (snap.get("models", {}) or {}).values()))
+            except Exception:
+                spent_today = 0.0
+            gate_trace["cost"] = {
+                "projected_req_usd": round(projected_req_usd, 6),
+                "per_req_cap": per_req_cap,
+                "spent_today_usd": round(spent_today, 4),
+                "daily_cap": day_cap,
+            }
             if not projected_cost_ok(
                 model_id,
                 int(gate_trace["top_m"]),
                 avg_tokens_per_item,
-                float(getattr(settings, "judge_cost_per_req_usd_max", 0.015)),
-                float(getattr(settings, "judge_daily_cost_usd_max", 10.0)),
+                per_req_cap,
+                day_cap,
             ):
-                gate_trace["mode"] = "skip"
-                gate_trace["reason"] = "cost_guardrail"
+                if bool(getattr(settings, "judge_cost_degrade_to_cheap", False)):
+                    gate_trace["mode"] = "cheap"
+                    gate_trace["reason"] = "cost_guardrail"
+                    gate_trace["top_m"] = int(getattr(settings, "judge_cheap_top_m", 12))
+                else:
+                    gate_trace["mode"] = "skip"
+                    gate_trace["reason"] = "cost_guardrail"
 
         # Adjust M by decision
         if gate_trace["mode"] == "cheap":
@@ -415,6 +435,7 @@ def judge_rerank(
     # Batch evaluate uncached (in parallel threads)
     batches: List[List[Dict[str, Any]]] = [need_eval[i:i+bs] for i in range(0, len(need_eval), bs)]
     results: List[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = []
+    llm_called = False
     had_error = False
     if batches and gate_trace.get("mode") != "skip" and not gate_trace.get("cache", {}).get("hit"):
         max_workers = max(1, min(int(getattr(settings, "judge_concurrency", 3) or 3), len(batches)))
@@ -425,6 +446,7 @@ def judge_rerank(
                 batch = future_to_batch[fut]
                 try:
                     scored = fut.result()
+                    llm_called = True
                 except Exception:
                     had_error = True
                     scored = _heuristic_judge_batch(facets, batch, settings)
@@ -470,6 +492,7 @@ def judge_rerank(
                         batch = future_to_batch2[fut]
                         try:
                             scored = fut.result()
+                            llm_called = True
                         except Exception:
                             scored = _heuristic_judge_batch(facets, batch, settings)
                         if not scored:
@@ -586,6 +609,11 @@ def judge_rerank(
         "cached_hits": _CACHE_HITS,
         "cached_misses": _CACHE_MISSES,
         "gate": gate_trace,
+        "llm_called": bool(llm_called),
+        "llm_skip_reason": (
+            ("cache_hit" if gate_trace.get("cache", {}).get("hit") else gate_trace.get("reason"))
+            if (not llm_called) else None
+        ),
     }
     return updated, trace
 

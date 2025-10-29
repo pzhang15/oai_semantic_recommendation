@@ -58,6 +58,12 @@ def create_app() -> FastAPI:
             result_cache.configure(max_size=settings.result_cache_size, ttl_secs=settings.result_cache_ttl_secs)
         # Configure judge request-level cache (LRU+TTL)
         judge_cache.init(size=settings.judge_cache_size, ttl_secs=settings.judge_cache_ttl_secs)
+        # Warm lexical artifacts (TF-IDF) so first request doesn't pay load cost
+        try:
+            from src.core.lexical import ready as lexical_ready
+            lexical_ready()
+        except Exception:
+            pass
 
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:

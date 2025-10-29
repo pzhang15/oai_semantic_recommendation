@@ -23,3 +23,20 @@ def fuse_scored(dense: List[Dict[str, float]], lex: List[Dict[str, float]], k0: 
     return rrf_fuse({"dense": dense_ids, "lex": lex_ids}, k0=k0, topn=topn)
 
 
+def weighted_rrf_fuse(rankings: Dict[str, List[str]], weights: Dict[str, float], k0: int, topn: int) -> List[str]:
+    scores: Dict[str, float] = {}
+    best_rank: Dict[str, int] = {}
+    for key, ids in rankings.items():
+        w = float(weights.get(key, 1.0))
+        if w <= 0:
+            continue
+        for pos, pid in enumerate(ids, start=1):
+            contrib = w * (1.0 / (k0 + pos))
+            scores[pid] = scores.get(pid, 0.0) + contrib
+            if (pid not in best_rank) or (pos < best_rank[pid]):
+                best_rank[pid] = pos
+    items: List[Tuple[str, float, int]] = [(pid, sc, best_rank.get(pid, 10**9)) for pid, sc in scores.items()]
+    items.sort(key=lambda t: (-t[1], t[2], t[0]))
+    return [pid for (pid, _, __) in items[:topn]]
+
+

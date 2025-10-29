@@ -20,6 +20,7 @@ from src.models.normalize import (
 from src.telemetry.timer import span
 from src.telemetry.counters import add_usage
 from src.core.clients import get_openai_client
+from src.core.parser_det import parse_deterministic, DetParseResult
 
 
 class ParserError(Exception):
@@ -385,8 +386,19 @@ def parse_query(text: str, *, model: Optional[str] = None, retries: int | None =
     if cached:
         return cached
 
-    client = get_openai_client()
+    # 1) Deterministic fast parse
+    det: DetParseResult = parse_deterministic(query)
+    add_usage("parser_det", None, 0, 0, det.ms)
 
+    # If facets mode forces deterministic or confidence high enough, return early
+    if settings.facets_mode in {"det", "det_llm"}:
+        if settings.facets_mode == "det" or det.confidence_overall >= settings.facets_det_conf_threshold:
+            facets = _post_normalize(det.facets, query)
+            _cache_put(cache_key, facets)
+            return facets
+
+    # 2) LLM fallback (merge with deterministic hints)
+    client = get_openai_client()
     schema = build_structured_output_schema(QueryFacets, name="query_facets")
 
     attempt = 0
@@ -408,7 +420,55 @@ def parse_query(text: str, *, model: Optional[str] = None, retries: int | None =
             content = resp.choices[0].message.content or "{}"
             data = json.loads(content)
             facets = QueryFacets.model_validate(data)
-            facets = _post_normalize(facets, query)
+            # Merge: prefer deterministic when present and LLM empty; union lists
+            merged = QueryFacets()
+            # Start with LLM result
+            merged = facets
+            # Categories
+            if not (merged.categories_include or []):
+                merged.categories_include = list(det.facets.categories_include or [])
+            else:
+                merged.categories_include = normalize_categories(list({*merged.categories_include, *(det.facets.categories_include or [])}))
+            # Colors
+            if not (merged.colors or []):
+                merged.colors = list(det.facets.colors or [])
+            else:
+                merged.colors = normalize_colors(list({*merged.colors, *(det.facets.colors or [])}))
+            # Materials
+            if not (merged.materials or []):
+                merged.materials = list(det.facets.materials or [])
+            else:
+                merged.materials = normalize_materials(list({*merged.materials, *(det.facets.materials or [])}))
+            # Gender/size/occasion
+            if not merged.gender_or_fit and det.facets.gender_or_fit:
+                merged.gender_or_fit = det.facets.gender_or_fit
+            if not merged.size_notes and det.facets.size_notes:
+                merged.size_notes = det.facets.size_notes
+            if not merged.occasion and det.facets.occasion:
+                merged.occasion = det.facets.occasion
+            # Must-have / hard constraints: union
+            merged.must_have = sorted(list({*(merged.must_have or []), *(det.facets.must_have or [])}))
+            merged.hard_constraints = sorted(list({*(merged.hard_constraints or []), *(det.facets.hard_constraints or [])}))
+            # Budget: combine min/max if missing on either side; prefer tighter range if both present
+            mi_llm = merged.budget_usd.min
+            ma_llm = merged.budget_usd.max
+            mi_det = det.facets.budget_usd.min
+            ma_det = det.facets.budget_usd.max
+            cur = merged.budget_usd.currency or det.facets.budget_usd.currency or "USD"
+            if mi_llm is None and mi_det is not None:
+                merged.budget_usd.min = mi_det
+            if ma_llm is None and ma_det is not None:
+                merged.budget_usd.max = ma_det
+            if isinstance(mi_llm, (int, float)) and isinstance(ma_llm, (int, float)) and isinstance(mi_det, (int, float)) and isinstance(ma_det, (int, float)):
+                # prefer tighter intersection if overlapping
+                lo = max(mi_llm, mi_det)
+                hi = min(ma_llm, ma_det)
+                if lo <= hi:
+                    merged.budget_usd.min = lo
+                    merged.budget_usd.max = hi
+            merged.budget_usd.currency = cur
+
+            facets = _post_normalize(merged, query)
             # usage tokens
             try:
                 usage = getattr(resp, "usage", None)
