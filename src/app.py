@@ -41,6 +41,7 @@ def create_app() -> FastAPI:
             index_path=settings.index_path,
             ids_path=settings.ids_path,
             stats_path=settings.stats_path,
+            meta_path=getattr(settings, "index_meta_path", None),
         )
         set_store(store)
         # Configure FAISS and BLAS threading for performance
@@ -82,6 +83,7 @@ def create_app() -> FastAPI:
                 "dim": store.dimension,
                 "size": store.size,
                 "index_type": store.index_type,
+                "llm_enabled": bool(getattr(settings, "llm_enabled", False)),
             }
             # lexical info if present
             try:
@@ -92,7 +94,15 @@ def create_app() -> FastAPI:
                 resp["lexical"] = {"ready": False}
             return resp
         except Exception:
-            return {"backend": "faiss", "dim": 0, "size": 0, "index_type": "unknown", "lexical": {"ready": False}}
+            s = get_settings()
+            return {
+                "backend": "faiss",
+                "dim": 0,
+                "size": 0,
+                "index_type": "unknown",
+                "llm_enabled": bool(getattr(s, "llm_enabled", False)),
+                "lexical": {"ready": False},
+            }
 
     return app
 

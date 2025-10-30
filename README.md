@@ -1,145 +1,139 @@
-# Semantic Fashion Recs — FAISS + OpenAI (parser/judge/outfit)
+## Semantic Fashion Recs — FAISS + OpenAI (parser/judge)
 
-Semantic search and outfit composition service using FAISS (IndexFlatIP) and OpenAI for parsing, judging, and composing. Telemetry captures token usage, timings, and estimated cost.
+Semantic product search with FAISS for dense retrieval and optional OpenAI features (parser, judge). Ships with a one‑click Docker setup and sensible fallbacks when no API key is provided.
 
-## Highlights
-- Semantic queries (e.g., "beach trip under $120", "smart casual office outfit")
-- FAISS exact search (IndexFlatIP) on ~826k items (1536-D unit vectors)
-- LLM parser with Structured Outputs; judge reranker (batch + caching)
-- MMR diversity + outfit composer (slot-based)
-- Telemetry with token/latency/cost; `/debug/stats` and eval scripts
+### Highlights
+- Semantic product search with lexical fallback (works without API key)
+- FAISS exact search (IndexFlatIP) with optional ANN variants
+- LLM parser (Structured Outputs) and judge re‑ranking
+- MMR diversity, variant capping, and rich telemetry
 
-## Architecture
-![Architecture](./docs/architecture.png)
+### Getting Started (Docker, ZIP users)
+This is the fastest way to run the demo from a zip with no prior knowledge.
 
-Sequence diagrams:
+Prerequisites:
+- Docker Desktop (Windows/macOS) or Docker Engine (Linux)
 
-![Search sequence](./docs/search-sequence.png)
+Steps:
+1) Unzip the package to a folder (e.g., `semantic-rec/`).
+2) Create `.env` from the example:
+   - Windows PowerShell:
+     ```powershell
+     Copy-Item env.example .env -Force
+     ```
+   - macOS/Linux:
+     ```bash
+     cp env.example .env
+     ```
 
-![Outfit sequence](./docs/outfit-sequence.png)
+3) Start the stack:
+   ```bash
+   docker compose up --build
+   ```
+   - Web: `http://localhost:5173`
+   - API: `http://localhost:8000` (health: `/healthz`)
 
-If the images are missing, render them first:
+What happens on first run:
+- API container runs a preflight check and a bootstrap step:
+  - Verifies FAISS/TF‑IDF/parquet artifacts; logs warnings if missing
+  - Builds TF‑IDF automatically if `data/products.parquet` exists
+  - Does not auto‑build FAISS (embeddings require an API key), but the app will run in lexical‑only mode
+- Web container installs Node modules inside the container (Linux‑native), avoiding Windows/macOS conflicts
+
+### One‑click scripts (optional)
+- Windows PowerShell: `./demo.ps1`
+- macOS/Linux: `./demo.sh`
+
+### Architecture Diagram
+
+- **PDF:** [docs/architecture/diagram.pdf](docs/architecture/diagram.pdf)
+- **PNG:** [docs/architecture/diagram.png](docs/architecture/diagram.png)
+
+Source: [`docs/architecture/diagram.mmd`](docs/architecture/diagram.mmd)
+
+Re-render locally:
 ```bash
-make diagrams
+# Linux/macOS
+./scripts/arch.sh
+
+# Windows PowerShell
+./scripts/arch.ps1
+
+# or
+make arch
 ```
 
-## Prerequisites
-- Python 3.11
-- Windows note: FAISS requires NumPy < 2. Install FAISS from conda-forge: `conda install -c conda-forge faiss-cpu`
-- OpenAI API key in environment or `.env`
+ ### Environment variables
+ - `OPENAI_API_KEY` (optional): enables embeddings, parser, judge. If missing, the app runs in lexical‑only mode.
+ - `MODEL_EMBED` (default: `text-embedding-3-small`)
+ - `MODEL_PARSER` (default: `gpt-4o-mini`), `MODEL_JUDGE` (default: same as parser)
+ - Index and retrieval: `INDEX_PATH`, `PARQUET_PATH`, `K_RETRIEVE`, `TOP_K_DEFAULT`, `MMR_LAMBDA`, `USE_JUDGE_DEFAULT`
 
-## Quickstart
-```bash
-python -m pip install -U pip
-python -m pip install -r requirements.txt
-
-# Create .env (set OPENAI_API_KEY and optional MODEL_*)
-# Build embeddings and FAISS (see scripts/index.py options)
-python scripts/index.py --embed
-python scripts/index.py --build-faiss
-
-# Run API
-uvicorn src.app:app --reload
-```
-
-Health:
-```bash
-curl http://127.0.0.1:8000/healthz
-```
-
-## Environment variables
-- `OPENAI_API_KEY` (required)
-- `OPENAI_BASE_URL` (optional)
-- `MODEL_EMBED` default `text-embedding-3-small`
-- `MODEL_PARSER` default `gpt-4o-mini`
-- `MODEL_JUDGE` default = `MODEL_PARSER`
-- `INDEX_PATH`, `PARQUET_PATH`, `K_RETRIEVE`, `TOP_K_DEFAULT`, `MMR_LAMBDA`, `USE_JUDGE_DEFAULT`
-- Outfit: `OUTFIT_*` (slots, pool size, timeouts, tolerance)
-
-Note: temperature=0 is used when supported; we auto-fallback if the model rejects custom temperature.
-
-## Judge Gating
-Judge gating reduces latency and cost by running LLM judging only when it helps.
-
-- Modes: SKIP (no judge), CHEAP (compact prompt, small top_m), FULL (standard)
-- Request-level cache: keyed by SHA-1 of `(model, rubric_version, normalized query, fused topM ids)`
-- Signals: retrieval margin/entropy, dense↔lexical Jaccard, budget/category/dup ratios, specificity
-- Telemetry: `/debug/stats` → `judge_gate` shows skipped/cheap/full, escalations, cache hits/misses, and `cost_saved_usd_est`
-
-Config knobs (env, with defaults):
-- `JUDGE_GATE_ENABLE=true`
-- `JUDGE_CHEAP_TOP_M=12`, `JUDGE_FULL_TOP_M=24`
-- `JUDGE_MARGIN_SKIP_MIN=0.05`, `JUDGE_ENTROPY_SKIP_MAX=1.2`, `JUDGE_JACCARD_SKIP_MIN=0.6`
-- `JUDGE_BUDGET_OK_SKIP_MIN=0.8`, `JUDGE_CATEGORY_OK_SKIP_MIN=0.7`, `JUDGE_DUP_SKIP_MAX=0.25`
-- `JUDGE_TOLERANCE_BUDGET=0.05`, `JUDGE_GATE_TIMEOUT_SECS=10`
-- `JUDGE_CACHE_SIZE=8000`, `JUDGE_CACHE_TTL_SECS=86400`
-- `JUDGE_COST_PER_REQ_USD_MAX=0.015`, `JUDGE_DAILY_COST_USD_MAX=10`
-- `RUBRIC_VERSION=1` (bump when changing the judge prompt/rubric)
-
-Public API responses are unchanged; the `trace` (when `debug=true`) now includes a `judge_gate` object with mode, top_m, reason, signals, cache, and escalation info.
-
-## Endpoints
-- `GET /healthz`
-- `POST /debug/retrieve` body: `{ "query": "...", "k": 10 }`
-- `POST /debug/parse` body: `{ "query": "..." }`
-- `POST /search` body: `{ "query": "...", "limit": 12, "use_judge": true }`
-- `POST /outfit` body: `{ "query": "...", "use_judge": true }`
-- `GET /debug/stats`
+ ### Endpoints
+ - `GET /healthz`
+ - `POST /search` body: `{ "query": "...", "limit": 12, "use_judge": true }`
 
 Examples:
 ```bash
 curl -X POST http://127.0.0.1:8000/search \
   -H "Content-Type: application/json" \
   -d '{"query":"linen shirt under $60","limit":12,"use_judge":false}'
-
-curl -X POST http://127.0.0.1:8000/outfit \
-  -H "Content-Type: application/json" \
-  -d '{"query":"summer beach outfit under $150, light colors, linen","use_judge":true}'
 ```
 
-## Design decisions & trade-offs
-- OpenAI-heavy vs local: faster iteration; Structured Outputs for determinism; schema validation; fallbacks
-- FAISS vs in-memory NumPy: 826k x 1536D ~4.7GB float32; FAISS gives C++ speed and easy ANN path
-- IndexFlatIP now vs ANN later: quality first; API is switchable
-- MMR & variant control: vector cosine + title Jaccard; hard cap on variants
-- Budget: filters & judge penalty; outfit finalizer recomputes totals and ensures numeric total_price
-- Resilience: retries and temperature fallback; judge failure -> retrieval-only
+### Optional: rebuild artifacts
+You usually do not need these. Use them in clean environments or when experimenting.
 
-## Evaluation & diagnostics
-Batch eval:
+- Rebuild lexical TF‑IDF (no API key needed):
+  ```bash
+  docker compose exec api bash -lc "python scripts/build_lexical.py"
+  ```
+- Build embeddings and FAISS (requires `OPENAI_API_KEY`):
+  ```bash
+  docker compose exec api bash -lc "python scripts/index.py --embed --build-faiss"
+  ```
+- Create an ANN variant from existing embeddings:
+  ```bash
+  docker compose exec api bash -lc "python scripts/build_index_ann.py --mode hnsw_pca \
+    --emb data/embeddings.npy --ids data/ids.json \
+    --out data/index_hnsw_pca.faiss --meta data/index_hnsw_pca.meta.json --dim_out 256"
+  ```
+- To use a non‑default index, set `INDEX_PATH` in `.env` and restart.
+
+### Troubleshooting
+- Web won’t start or loops on npm: remove any host `frontend/node_modules` and restart. The container now owns `node_modules`.
+  - Windows PowerShell: `rd /s /q frontend\node_modules`
+  - macOS/Linux: `rm -rf frontend/node_modules`
+- OpenAI base URL errors: for standard OpenAI, keep `OPENAI_BASE_URL` unset. If using Azure/compatible endpoints, include `https://`.
+- View logs: `docker compose logs -f api` and `docker compose logs -f web`
+- Stop and clean: `docker compose down -v`
+
+### Quickstart (local Python, optional)
+For contributors who prefer running the API locally without Docker.
+
 ```bash
-python scripts/eval_search_batch.py --in samples/queries_search.jsonl --out reports/
-python scripts/eval_outfit_batch.py  --in samples/queries_outfit.jsonl --out reports/
-python scripts/eval_cost_snapshot.py --out reports/
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+
+# Create .env (set OPENAI_API_KEY if you want dense/LLM features)
+cp env.example .env
+
+# Run API
+uvicorn src.app:app --host 0.0.0.0 --port 8000
 ```
-Smoke:
+
+Health check:
 ```bash
-python scripts/eval_latency_smoke.py
-```
-Stats:
-```bash
-curl http://127.0.0.1:8000/debug/stats
+curl http://127.0.0.1:8000/healthz
 ```
 
-## Troubleshooting
-- Windows FAISS + NumPy: ensure `numpy>=1.26,<2`; install FAISS via conda-forge
-- OpenAI errors: temperature not supported -> auto-retry without temperature
-- Parser 422: reduce prompt complexity; we retry with validation hints
-- Index mismatch: ensure `ids.json` length equals `index.ntotal`
+### Repo layout
+- `src/` app, core, models, routers, telemetry
+- `scripts/` indexing, eval, smoke, diagram rendering
+- `docs/` architecture and sequence diagrams
+- `data/` indexes and artifacts (generated/ignored)
+- `frontend/` Vite + React UI
 
-## Repo layout
-- `src/` (app/core/models/routers/telemetry)
-- `scripts/` (index, smoke tests, eval, render_diagrams)
-- `docs/` (mermaid + png/pdf)
-- `data/` (ignored in VCS)
-- `samples/` (queries)
+### License
+MIT
 
-## Diagrams
-See `docs/README-diagrams.md`. Render with:
-```bash
-make diagrams
-```
-
-## License / Credits
-MIT. Dataset attribution per assignment; built for evaluation via CodexCLI.
 

@@ -66,6 +66,12 @@ def load_products_table(parquet_path: str) -> pd.DataFrame:
     all_cols = pd.read_parquet(parquet_path, columns=None).columns.tolist()
     use_cols = [c for c in cols if c in all_cols]
     table = pd.read_parquet(parquet_path, columns=use_cols)
+    # Set index to id for faster reindex-based selection while keeping the column
+    try:
+        if "id" in table.columns:
+            table = table.set_index("id", drop=False)
+    except Exception:
+        pass
     return table
 
 
@@ -86,20 +92,87 @@ def _compose_query_from_facets(query_text: str, facets: Any | None) -> str:
 
 
 def retrieve(text: str, k: int | None = None, facets: Any | None = None) -> Dict[str, Any]:
-    if _store is None:
-        # Lazy-load store for script usage (when FastAPI startup hasn't run)
-        settings = get_settings()
-        store = FaissStore()
-        store.load(index_path=settings.index_path, ids_path=settings.ids_path, stats_path=settings.stats_path)
-        set_store(store)
     settings = get_settings()
+    # Lazy-load store only when dense retrieval is usable; otherwise skip FAISS entirely
+    if _store is None and settings.llm_enabled:
+        try:
+            store = FaissStore()
+            store.load(index_path=settings.index_path, ids_path=settings.ids_path, stats_path=settings.stats_path)
+            set_store(store)
+        except Exception:
+            # If FAISS artifacts are missing, continue in lexical-only mode
+            pass
     top_k = int(k or settings.top_k_default)
 
     t0 = time.perf_counter()
+    faiss_span = 0.0
+    # When LLM is disabled (no API key) or FAISS store isn't available, run lexical-only path
+    if (not settings.llm_enabled) or (_store is None):
+        from src.core.lexical import search_lexical
+        qtext = _compose_query_from_facets(text, facets)
+        lex_k = max(top_k, settings.hybrid_lex_k)
+        lex_hits, lex_times = search_lexical(qtext, lex_k, facets, True)
+        # map to items
+        ids = [h["id"] for h in lex_hits]
+        df = load_products_table(settings.parquet_path)
+        try:
+            sub = df.reindex(ids).dropna(subset=["id"]).copy()
+        except Exception:
+            sub = df[df["id"].isin(ids)].copy()
+            order = {pid: j for j, pid in enumerate(ids)}
+            sub["__order"] = sub["id"].map(order)
+            sub = sub.sort_values("__order").drop(columns="__order")
+
+        score_map = {str(h["id"]): float(h.get("score") or 0.0) for h in lex_hits}
+        items: List[Dict[str, Any]] = []
+        for row in sub.itertuples(index=False):
+            pid = getattr(row, "id")
+            pid_str = str(pid)
+            title = getattr(row, "title", None)
+            brand = getattr(row, "brand", None)
+            price = getattr(row, "price", None)
+            image_url = getattr(row, "image_url", None)
+            product_url = getattr(row, "product_url", None)
+            sc = score_map.get(pid_str, 0.0)
+            price_val: float | None
+            if isinstance(price, float) and (not np.isfinite(price)):
+                price_val = None
+            else:
+                price_val = float(price) if isinstance(price, (int, float)) else None
+            item: Dict[str, Any] = {
+                "id": pid_str,
+                "brand": brand,
+                "price": price_val,
+                "image_url": image_url,
+                "product_url": product_url,
+                "score": float(sc),
+                "raw_score": float(sc),
+                "vector_index": None,
+            }
+            if title is not None:
+                item["title"] = title
+            items.append(item)
+        # Quality sort and filter
+        def quality_key(it: Dict[str, Any]) -> tuple[int, int]:
+            q = int(it.get("price") is not None) + int(it.get("image_url") is not None) + int(it.get("brand") not in (None, ""))
+            return (q, 0)
+        items = sorted(items, key=quality_key, reverse=True)[:top_k]
+        return {
+            "items": items,
+            "trace": {
+                "k": top_k,
+                "dim": None,
+                "ntotal": None,
+                "index": {"mode": "lex_only", "signature": ""},
+                "hybrid": {"enabled": False},
+                "timings": {"embed_ms": 0.0, **{k: float(v) for k, v in (lex_times or {}).items()}},
+            },
+        }
+
+    # Dense or hybrid path
     q = embed_query(text)
     t1 = time.perf_counter()
     dense_k = max(top_k, settings.hybrid_dense_k if settings.hybrid_enabled else top_k)
-    faiss_span = 0.0
 
     def _faiss_search() -> tuple[List[int], List[float], float]:
         s0 = time.perf_counter()
@@ -304,12 +377,15 @@ def retrieve(text: str, k: int | None = None, facets: Any | None = None) -> Dict
     df = load_products_table(settings.parquet_path)
     # Choose ordering source: fused if hybrid, else dense; after expansion we may have overridden top_ids
     order_ids = fused_ids if hybrid_trace.get("enabled") else top_ids
-    sub = df[df["id"].isin(order_ids)].copy()
-
-    # Preserve FAISS order (stable)
-    order = {pid: j for j, pid in enumerate(order_ids)}
-    sub["__order"] = sub["id"].map(order)
-    sub = sub.sort_values("__order").drop(columns="__order")
+    # Fast reindex by id to avoid full-frame scans; index is set to 'id' in load_products_table
+    try:
+        sub = df.reindex(order_ids).dropna(subset=["id"]).copy()
+    except Exception:
+        # Fallback if index missing
+        sub = df[df["id"].isin(order_ids)].copy()
+        order = {pid: j for j, pid in enumerate(order_ids)}
+        sub["__order"] = sub["id"].map(order)
+        sub = sub.sort_values("__order").drop(columns="__order")
 
     # Build items list with scores
     score_map = {pid: float(sc) for pid, sc in zip(top_ids, scores)}
@@ -373,7 +449,8 @@ def retrieve(text: str, k: int | None = None, facets: Any | None = None) -> Dict
             "product_url": product_url,
             "score": float(sc) if sc is not None else 0.0,
             "raw_score": float(sc) if sc is not None else 0.0,
-            "vector_index": idxs[j] if j < len(idxs) else None,
+            # vector_index meaningful only for dense-only ordering; omit when fused
+            "vector_index": (idxs[j] if (j < len(idxs) and not (hybrid_trace.get("enabled"))) else None),
         }
         # Only include title if present; frontend schema expects string when provided (not null)
         if title is not None:
@@ -423,6 +500,10 @@ def retrieve(text: str, k: int | None = None, facets: Any | None = None) -> Dict
             "k": top_k,
             "dim": _store.dimension,
             "ntotal": _store.size,
+            "index": {
+                "mode": str(getattr(settings, "ann_mode", "flat")),
+                "signature": getattr(_store, "signature", ""),
+            },
             "hybrid": hybrid_trace,
             "timings": {
                 "embed_ms": round((t1 - t0) * 1000.0, 2),

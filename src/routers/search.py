@@ -172,6 +172,7 @@ async def search(body: Dict[str, Any]) -> Dict[str, Any]:
                 dense_ids=dense_ids,
                 lex_ids=lex_ids,
                 normalized_query=(query or "").strip().lower(),
+                index_signature=str(((retrieval_trace or {}).get("index") or {}).get("signature") or ""),
             )
             timings["judge_ms"] = ms
         else:

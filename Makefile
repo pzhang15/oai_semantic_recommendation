@@ -32,3 +32,32 @@ diagrams:
 docs: diagrams
 
 
+
+## --- Deployment conveniences ---
+.PHONY: demo-docker dev-env smoke verify clean
+
+demo-docker:
+	@if command -v docker >/dev/null 2>&1; then docker compose up --build ; \
+	else ./demo.sh ; fi
+
+dev-env:
+	$(PYTHON) -m pip install -U pip
+	$(PYTHON) -m pip install -r requirements.txt
+	( cd frontend && npm ci || yarn || pnpm i )
+	$(PYTHON) scripts/preflight.py
+	$(PYTHON) scripts/bootstrap_demo.py
+	uvicorn src.app:app --host $${API_HOST:-0.0.0.0} --port $${API_PORT:-8000}
+
+smoke:
+	$(PYTHON) scripts/smoke_tests.py
+
+verify:
+	./demo.sh --headless || true
+	$(MAKE) smoke
+
+clean:
+	rm -rf .venv __pycache__ **/__pycache__
+
+.PHONY: arch
+arch: ## render architecture diagram (requires node dev deps)
+	npm run arch || (npm install --no-audit --no-fund && npm run arch)

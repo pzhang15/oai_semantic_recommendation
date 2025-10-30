@@ -1,0 +1,14 @@
+{
+  "name": "oai-semantic-recommendation-root",
+  "private": true,
+  "devDependencies": {
+    "@mermaid-js/mermaid-cli": "^10.9.1"
+  },
+  "scripts": {
+    "arch:pdf": "mmdc -i docs/architecture/diagram.mmd -o docs/architecture/diagram.pdf -b transparent -w 2000 -H 1300",
+    "arch:png": "mmdc -i docs/architecture/diagram.mmd -o docs/architecture/diagram.png -b transparent -w 2000 -H 1300",
+    "arch": "npm run arch:pdf && npm run arch:png"
+  }
+}
+
+

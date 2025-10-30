@@ -283,6 +283,7 @@ def judge_rerank(
     dense_ids: Optional[List[str]] = None,
     lex_ids: Optional[List[str]] = None,
     normalized_query: Optional[str] = None,
+    index_signature: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if settings is None:
         settings = get_settings()
@@ -321,7 +322,7 @@ def judge_rerank(
     # Gating and request-level cache fingerprint (for the fused set)
     fused_ids = [str(it.get("id")) for it in sorted_by_retr[: min(settings.judge_full_top_m if hasattr(settings, "judge_full_top_m") else default_M, len(sorted_by_retr))]]
     fp_query = normalized_query or facets_key_min
-    fp = fingerprint(model_id, getattr(settings, "rubric_version", settings.judge_rubric_version), fp_query, fused_ids)
+    fp = fingerprint(model_id, getattr(settings, "rubric_version", settings.judge_rubric_version), fp_query, fused_ids, index_signature)
     gate_trace: Dict[str, Any] = {
         "mode": "full",
         "top_m": default_M,

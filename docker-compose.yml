@@ -1,0 +1,27 @@
+services:
+  api:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+
+  web:
+    image: node:20-alpine
+    working_dir: /web
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - CHOKIDAR_USEPOLLING=1
+      - PUPPETEER_SKIP_DOWNLOAD=1
+      - CI=1
+    volumes:
+      - ./frontend:/web
+      - /web/node_modules
+    command: sh -lc "npm ci --no-audit --no-fund && npm run dev -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    restart: unless-stopped
+    depends_on:
+      - api

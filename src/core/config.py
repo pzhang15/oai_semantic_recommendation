@@ -15,10 +15,8 @@ class Config:
 
         # OpenAI
         self.openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
-        if not self.openai_api_key:
-            raise ValueError(
-                "OPENAI_API_KEY is not set. Please set it in your environment or .env file."
-            )
+        # LLM is optional for demo: when missing, we will run lexical-only + dense disabled
+        self.llm_enabled: bool = bool(self.openai_api_key)
         self.openai_base_url: Optional[str] = os.getenv("OPENAI_BASE_URL")
 
         # Models and backend
@@ -31,6 +29,7 @@ class Config:
         # Data
         self.dataset_path: Optional[str] = os.getenv("DATASET_PATH")
         self.index_path: str = os.getenv("INDEX_PATH", "data/index.faiss")
+        self.index_meta_path: str = os.getenv("INDEX_META_PATH", "")
         self.ids_path: str = os.getenv("IDS_PATH", "data/ids.json")
         self.stats_path: str = os.getenv("STATS_PATH", "data/stats.json")
         self.parquet_path: str = os.getenv("PARQUET_PATH", "data/products.parquet")
@@ -193,7 +192,7 @@ class Config:
         self.judge_cost_degrade_to_cheap: bool = os.getenv("JUDGE_COST_DEGRADE_TO_CHEAP", "true").lower() == "true"
 
         # Query expansion
-        self.expansion_enabled: bool = os.getenv("EXPANSION_ENABLED", "true").lower() == "true"
+        self.expansion_enabled: bool = os.getenv("EXPANSION_ENABLED", "false").lower() == "true"
         try:
             self.expansion_max_det: int = int(os.getenv("EXPANSION_MAX_DET", "2"))
         except ValueError:
@@ -314,13 +313,13 @@ class Config:
         # Hybrid retrieval (TF-IDF + Dense + RRF)
         self.hybrid_enabled: bool = os.getenv("HYBRID_ENABLED", "true").lower() == "true"
         try:
-            self.hybrid_dense_k: int = int(os.getenv("HYBRID_DENSE_K", "200"))
+            self.hybrid_dense_k: int = int(os.getenv("HYBRID_DENSE_K", "150"))
         except ValueError:
-            self.hybrid_dense_k = 200
+            self.hybrid_dense_k = 150
         try:
-            self.hybrid_lex_k: int = int(os.getenv("HYBRID_LEX_K", "200"))
+            self.hybrid_lex_k: int = int(os.getenv("HYBRID_LEX_K", "150"))
         except ValueError:
-            self.hybrid_lex_k = 200
+            self.hybrid_lex_k = 150
         try:
             self.hybrid_rrf_k: int = int(os.getenv("HYBRID_RRF_K", "75"))
         except ValueError:
@@ -356,6 +355,45 @@ class Config:
         self.tfidf_vec_path: str = os.getenv("TFIDF_VEC_PATH", "data/tfidf_vectorizer.joblib")
         self.tfidf_ids_path: str = os.getenv("TFIDF_IDS_PATH", "data/tfidf_ids.json")
         self.tfidf_meta_path: str = os.getenv("TFIDF_META_PATH", "data/tfidf_meta.json")
+
+        # ANN controls
+        self.ann_mode: str = os.getenv("ANN_MODE", "flat").lower()  # flat|pca_flat|hnsw_1536|hnsw_pca|ivf_flat|ivf_pq
+        try:
+            self.ann_dim: int = int(os.getenv("ANN_DIM", "256"))
+        except ValueError:
+            self.ann_dim = 256
+        try:
+            self.ann_threads: int = int(os.getenv("ANN_THREADS", str(os.cpu_count() or 8)))
+        except ValueError:
+            self.ann_threads = os.cpu_count() or 8  # type: ignore[assignment]
+        try:
+            self.hnsw_m: int = int(os.getenv("HNSW_M", "32"))
+        except ValueError:
+            self.hnsw_m = 32
+        try:
+            self.hnsw_ef_construction: int = int(os.getenv("HNSW_EF_CONSTRUCTION", "200"))
+        except ValueError:
+            self.hnsw_ef_construction = 200
+        try:
+            self.hnsw_ef_search: int = int(os.getenv("HNSW_EF_SEARCH", "128"))
+        except ValueError:
+            self.hnsw_ef_search = 128
+        try:
+            self.ivf_nlist: int = int(os.getenv("IVF_NLIST", "4096"))
+        except ValueError:
+            self.ivf_nlist = 4096
+        try:
+            self.ivf_nprobe: int = int(os.getenv("IVF_NPROBE", "16"))
+        except ValueError:
+            self.ivf_nprobe = 16
+        try:
+            self.pq_m: int = int(os.getenv("PQ_M", "64"))
+        except ValueError:
+            self.pq_m = 64
+        try:
+            self.pq_bits: int = int(os.getenv("PQ_BITS", "8"))
+        except ValueError:
+            self.pq_bits = 8
 
         # Result-set cache for stable pagination
         self.result_cache_enable: bool = os.getenv("RESULT_CACHE_ENABLE", "true").lower() == "true"

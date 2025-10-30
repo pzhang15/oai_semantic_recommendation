@@ -244,8 +244,9 @@ def projected_cost_ok(
     return True
 
 
-def fingerprint(model_id: str, rubric_version: Any, normalized_query: str, fused_topM_ids: Sequence[str]) -> str:
-    key = f"{model_id}|{str(rubric_version)}|{normalized_query}|{','.join(map(str, fused_topM_ids))}"
+def fingerprint(model_id: str, rubric_version: Any, normalized_query: str, fused_topM_ids: Sequence[str], index_signature: str | None = None) -> str:
+    sig = index_signature or "nosig"
+    key = f"{model_id}|{str(rubric_version)}|{normalized_query}|{sig}|{','.join(map(str, fused_topM_ids))}"
     h = hashlib.sha1(key.encode("utf-8")).hexdigest()
     return f"sha1:{h}"
 

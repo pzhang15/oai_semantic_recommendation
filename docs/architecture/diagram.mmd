@@ -1,0 +1,80 @@
+flowchart LR
+
+  %% ====== STYLES ======
+  classDef store fill:#EAF4FF,stroke:#1D4ED8,stroke-width:1px;
+  classDef svc fill:#F7FEE7,stroke:#65A30D,stroke-width:1px;
+  classDef comp fill:#FFF7ED,stroke:#EA580C,stroke-width:1px;
+  classDef llm fill:#FEF2F2,stroke:#DC2626,stroke-width:1px;
+  classDef cache fill:#F3F4F6,stroke:#6B7280,stroke-width:1px,stroke-dasharray:3 3;
+  classDef ext fill:#F0F9FF,stroke:#0891B2,stroke-width:1px,stroke-dasharray:4 2;
+
+  %% ====== OFFLINE / BATCH ======
+  subgraph OFFLINE [Offline / Batch Pipelines]
+    direction LR
+    DSET[[Provided Dataset<br/>JSONL to Parquet]]:::store
+    DSET -->|normalize + unify schema| PARQ[(data/products.parquet<br/>data/samples/mini.parquet)]:::store
+    PARQ -->|text_for_embedding| EMB[Embedding Pipeline<br/>OpenAI 1536D to unit norm]:::svc
+    EMB --> ENP[(data/embeddings.npy<br/>data/ids.json<br/>data/stats.json)]:::store
+    PARQ --> LEXBUILD[Lexical Build - TF-IDF]:::svc
+    LEXBUILD --> LEX[(data/tfidf_doc.npz<br/>data/tfidf_vectorizer.joblib<br/>data/tfidf_ids.json<br/>data/tfidf_meta.json)]:::store
+    ENP --> IDX[(FAISS IndexFlatIP exact<br/>data/index.faiss)]:::store
+  end
+
+  %% ====== ONLINE / RUNTIME ======
+  subgraph ONLINE [Online / Runtime Request Path]
+    direction TB
+    UI[[User]]:::ext --> Q[Query Input]:::comp
+    Q --> NORM[Normalize + Tokenize]:::svc
+    NORM --> DET[Deterministic Facet Parser<br/>colors/materials/brands/price]:::svc
+    DET -- low confidence or ambiguity --> PARSELLM[LLM Fallback Parse - budgeted]:::llm
+    DET -- confident --> FACETS[(Facet Parse JSON)]:::store
+    PARSELLM --> FACETS
+    NORM --> EXP[Micro Query Expansion<br/>rule-based + optional 1 low LLM]:::svc
+    %% Retrieval fan-out
+    FACETS -->|constraints + priors| RETRIEVE{{Retrieve per query variant}}:::svc
+    EXP --> RETRIEVE
+    IDX -->|dense cosine FlatIP exact| RETRIEVE
+    LEX -->|lexical score TF-IDF| RETRIEVE
+    RETRIEVE --> FUSE[RRF Fusion dense + lexical + expansions]:::svc
+    FACETS -->|budget/category/material| PRIORS[Priors & Hard Filters]:::svc
+    FUSE --> PRIORS
+    PRIORS --> MMR[MMR Diversity - adaptive lambda]:::svc
+    %% Judge gating
+    MMR --> GATE{Judge Gate<br/>SKIP / CHEAP / FULL}:::svc
+    GATE -->|SKIP| FINAL
+    GATE -->|CHEAP/FULL top_m| JUDGE[LLM Judge Re-rank<br/>strict rubric + cache]:::llm
+    JUDGE --> FINAL[Final Ranked Results]:::store
+    FINAL --> OUTFIT[Outfit Composer<br/>if enabled]:::svc
+    FINAL --> UIRESP[Frontend Cards + Why-Chips + Diagnostics]:::comp
+    OUTFIT --> UIRESP
+  end
+
+  %% ====== CROSS-CUTTING ======
+  subgraph CROSS [Cross-Cutting Concerns]
+    direction LR
+    PCACHE[(Parser Cache<br/>by version + query)]:::cache
+    JCACHE[(Judge Cache<br/>by model + rubric + fused ids)]:::cache
+    STATS[(Telemetry + Sub-Timers<br/>/health /debug/stats)]:::cache
+  end
+
+  DET -- cache hit --> PCACHE
+  JUDGE -- cache hit --> JCACHE
+  NORM -. trace ids + timers .-> STATS
+  RETRIEVE -. faiss_ms/lex_ms .-> STATS
+  GATE -. decision + tokens .-> STATS
+
+  %% ====== DEPLOYMENT CONTEXT ======
+  subgraph DEPLOY [Deployment]
+    direction LR
+    API[[api FastAPI/Uvicorn<br/>port 8000<br/>/healthz /search]]:::svc
+    WEB[[web Vite dev server<br/>port 5173<br/>VITE_API_URL=http://localhost:8000]]:::svc
+  end
+
+  UI --> WEB
+  WEB -->|POST /search| API
+  STATS --> API
+
+  %% Footer version tag
+  note[System Diagram v2 - 2025-10-30]:::cache
+
+
