@@ -6,7 +6,7 @@
   },
   "scripts": {
     "arch:pdf": "mmdc -i docs/architecture/diagram.mmd -o docs/architecture/diagram.pdf -b transparent -w 2000 -H 1300",
-    "arch:png": "mmdc -i docs/architecture/diagram.mmd -o docs/architecture/diagram.png -b transparent -w 2000 -H 1300",
+    "arch:png": "mmdc -i docs/architecture/diagram.mmd -o docs/architecture/diagram.png -b transparent -w 3840 -H 2160",
     "arch": "npm run arch:pdf && npm run arch:png"
   }
 }
