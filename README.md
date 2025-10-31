@@ -80,22 +80,75 @@ See **[docs/design/decisions.md](docs/design/decisions.md)** (with summary matri
 
 See **[docs/exploration/additional_exploration.md](docs/exploration/additional_exploration.md)** for notebooks, experimental scripts, improvements made, and next steps.
 
- ### Environment variables
- - `OPENAI_API_KEY` (optional): enables embeddings, parser, judge. If missing, the app runs in lexical‑only mode.
- - `MODEL_EMBED` (default: `text-embedding-3-small`)
- - `MODEL_PARSER` (default: `gpt-4o-mini`), `MODEL_JUDGE` (default: same as parser)
- - Index and retrieval: `INDEX_PATH`, `PARQUET_PATH`, `K_RETRIEVE`, `TOP_K_DEFAULT`, `MMR_LAMBDA`, `USE_JUDGE_DEFAULT`
+### Environment variables
+- `OPENAI_API_KEY`: enables embeddings, parser fallback, and judge re‑ranking.
+- `MODEL_EMBED` (default: `text-embedding-3-small`)
+- `MODEL_PARSER` (default: `gpt-4o-mini`), `MODEL_JUDGE` (default: same as parser)
+- Index and retrieval: `INDEX_PATH`, `PARQUET_PATH`, `K_RETRIEVE`, `TOP_K_DEFAULT`, `MMR_LAMBDA`, `USE_JUDGE_DEFAULT`
 
- ### Endpoints
- - `GET /healthz`
- - `POST /search` body: `{ "query": "...", "limit": 12, "use_judge": true }`
+### Testing the API endpoints
 
-Examples:
+Prerequisites:
+- The stack is up: `docker compose up --build`
+- Base URL: `http://localhost:8000`
+
+1) Health check
 ```bash
-curl -X POST http://127.0.0.1:8000/search \
-  -H "Content-Type: application/json" \
-  -d '{"query":"linen shirt under $60","limit":12,"use_judge":false}'
+curl -s http://localhost:8000/healthz | jq .
 ```
+You should see keys like `index_type` (flatip), `dim`, `size`, and optionally a lexical readiness block.
+
+2) Basic search (bash/zsh)
+```bash
+curl -s -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"linen shirt under $60","limit":12,"use_judge":false}' | jq .
+```
+
+PowerShell (Windows):
+```powershell
+curl -Method POST "http://localhost:8000/search" `
+  -ContentType "application/json" `
+  -Body '{"query":"linen shirt under $60","limit":12,"use_judge":false}'
+```
+
+3) Pagination
+- Use `page` (1-based) together with `limit`.
+```bash
+curl -s -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"white sneakers","limit":12,"page":2,"use_judge":false}' | jq .items[].id
+```
+
+4) Debug timings and traces
+- Add `"debug": true` to get per-stage sub‑timers in the `trace` object.
+```bash
+curl -s -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"navy blazer under $200","limit":12,"debug":true,"use_judge":false}' | jq .trace
+```
+
+5) Constraint‑heavy queries (examples)
+- Budget first: "summer dress under $120"
+- Materials/colors: "leather belt brown", "silk scarf blue"
+- Brands/categories: "dr martens boots", "linen shirt"
+
+6) Judge gate (optional)
+- To exercise the re‑rank stage, set `"use_judge": true`. Ensure `OPENAI_API_KEY` is configured before enabling judge.
+```bash
+curl -s -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"casual office shoes under $150","limit":12,"use_judge":true,"debug":true}' | jq .trace.judge_gate
+```
+
+Troubleshooting:
+- 400 "Query is required": ensure `query` is a non‑empty string in the JSON body.
+- Connection/LLM errors: verify `OPENAI_API_KEY` is set and check `docker compose logs api --tail=200`.
+- CORS (browser): the frontend sets `VITE_API_URL=http://localhost:8000` by default.
+
+### Endpoints
+- `GET /healthz`
+- `POST /search` body keys: `query` (string), `limit` (int), `page` (int, 1-based), `use_judge` (bool), `debug` (bool)
 
 ### Optional: rebuild artifacts
 You usually do not need these. Use them in clean environments or when experimenting.
