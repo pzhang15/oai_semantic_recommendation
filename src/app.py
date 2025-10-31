@@ -36,14 +36,22 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def _load_faiss() -> None:
         settings = get_settings()
-        store = FaissStore()
-        store.load(
-            index_path=settings.index_path,
-            ids_path=settings.ids_path,
-            stats_path=settings.stats_path,
-            meta_path=getattr(settings, "index_meta_path", None),
-        )
-        set_store(store)
+        try:
+            store = FaissStore()
+            store.load(
+                index_path=settings.index_path,
+                ids_path=settings.ids_path,
+                stats_path=settings.stats_path,
+                meta_path=getattr(settings, "index_meta_path", None),
+            )
+            set_store(store)
+        except Exception as e:
+            # Degrade gracefully when FAISS artifacts are missing; lexical-only will still work
+            try:
+                # simple stderr notice without adding a logger dependency
+                print(f"[WARN] FAISS index not loaded at startup: {e}")
+            except Exception:
+                pass
         # Configure FAISS and BLAS threading for performance
         try:
             import faiss  # type: ignore
