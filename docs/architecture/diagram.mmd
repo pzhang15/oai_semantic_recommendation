@@ -44,9 +44,7 @@ flowchart LR
     GATE -->|SKIP| FINAL
     GATE -->|CHEAP/FULL top_m| JUDGE[LLM Judge Re-rank<br/>strict rubric + cache]:::llm
     JUDGE --> FINAL[Final Ranked Results]:::store
-    FINAL --> OUTFIT[Outfit Composer<br/>if enabled]:::svc
     FINAL --> UIRESP[Frontend Cards + Why-Chips + Diagnostics]:::comp
-    OUTFIT --> UIRESP
   end
 
   %% ====== CROSS-CUTTING ======

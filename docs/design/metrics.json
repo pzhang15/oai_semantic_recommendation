@@ -1,0 +1,22 @@
+{
+  "health": {
+    "backend": "faiss",
+    "dim": 1536,
+    "size": 826078,
+    "index_type": "flatip",
+    "llm_enabled": true,
+    "lexical": {
+      "ready": true,
+      "rows": 826108,
+      "vocab": 1231288,
+      "path": "data/tfidf_doc.npz"
+    }
+  },
+  "lat_ms": [
+    21979.388800100423,
+    12766.417100094259,
+    10017.693899921142
+  ],
+  "p50": 12766.42,
+  "p95": 21979.39
+}

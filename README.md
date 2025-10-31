@@ -3,10 +3,23 @@
 Semantic product search with FAISS for dense retrieval and optional OpenAI features (parser, judge). Ships with a one‑click Docker setup and sensible fallbacks when no API key is provided.
 
 ### Highlights
-- Semantic product search with lexical fallback (works without API key)
-- FAISS exact search (IndexFlatIP) with optional ANN variants
-- LLM parser (Structured Outputs) and judge re‑ranking
-- MMR diversity, variant capping, and rich telemetry
+- Exact dense retrieval (FlatIP on unit vectors) + lexical recall
+- Deterministic facet parsing first, with LLM fallback only on low‑confidence
+- Micro query expansion (a few controlled rewrites; no heavy paraphrasing)
+- Hybrid fusion and post‑processing: RRF → priors/filters → MMR diversity
+- Gated second stage: SKIP/CHEAP/FULL with rubric‑driven judge and cache
+- Observability built‑in: `/healthz`, sub‑timers, and debug routes
+- Docker one‑click: api (FastAPI/Uvicorn) + web (Vite), LLM‑off demo mode supported
+
+Core components:
+- Constraint‑first understanding (deterministic facets: price/category/material/brand)
+- Hybrid retrieval (dense + TF‑style lexical) with controlled expansions
+- Rank fusion (RRF), priors/filters enforcement, and MMR diversity control
+- Judge gate to re‑rank only when it measurably helps (cached by signature)
+- Telemetry and health reporting for credible tuning and easy troubleshooting
+
+Star feature:
+- **Fast, explainable search that respects constraints first and only spends on re‑ranking when it moves the needle.** The gate keeps p50 low and costs predictable, while “why‑chips” and sub‑timers make the system trustworthy and easy to iterate.
 
 ### Getting Started (Docker, ZIP users)
 This is the fastest way to run the demo from a zip with no prior knowledge.
@@ -40,10 +53,6 @@ What happens on first run:
   - Does not auto‑build FAISS (embeddings require an API key), but the app will run in lexical‑only mode
 - Web container installs Node modules inside the container (Linux‑native), avoiding Windows/macOS conflicts
 
-### One‑click scripts (optional)
-- Windows PowerShell: `./demo.ps1`
-- macOS/Linux: `./demo.sh`
-
 ### Architecture Diagram
 
 - **PDF:** [docs/architecture/diagram.pdf](docs/architecture/diagram.pdf)
@@ -62,6 +71,14 @@ Re-render locally:
 # or
 make arch
 ```
+
+## Key Design Decisions & Trade-offs
+
+See **[docs/design/decisions.md](docs/design/decisions.md)** (with summary matrix).
+
+## Additional Exploration
+
+See **[docs/exploration/additional_exploration.md](docs/exploration/additional_exploration.md)** for notebooks, experimental scripts, improvements made, and next steps.
 
  ### Environment variables
  - `OPENAI_API_KEY` (optional): enables embeddings, parser, judge. If missing, the app runs in lexical‑only mode.
